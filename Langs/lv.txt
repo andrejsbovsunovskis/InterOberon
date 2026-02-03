@@ -1,0 +1,87 @@
+[keywords]
+MODULE=MODULIS
+END=BEIGAS
+BEGIN=SĀKUMS
+VAR=MAINĪGIE
+IMPORT=IMPORTĒ
+DIV=DAL
+MOD=ATL
+OR=VAI
+FALSE=APLAMS
+TRUE=PATIESS
+IF=JA
+THEN=TAD
+ELSIF=BETJA
+ELSE=CITĀDI
+WHILE=KAMĒR
+DO=DARĪT
+REPEAT=ATKĀRTOT
+UNTIL=LĪDZ
+
+[universe]
+CHAR=LITERA
+INTEGER=VESELAIS
+BOOLEAN=BŪLA
+CHR=LIT
+ORD=ORD
+
+[Out]
+=Izvade
+Char=Litera
+Int=Veselais
+Ln=Pārnese
+
+[In]
+=Ievade
+Char=Litera
+Int=Veselais
+
+[errors]
+1=Tiek gaidīts MODULIS
+2=Tiek gaidīts semikols
+3=Tiek gaidīts vārds
+4=Tiek gaidīts BEIGAS
+5=Tiek gaidīts punkts
+6=Tiek gaidīts kols
+7=Tiek gaidīts :=
+8=Tiek gaidīts tips
+9=Tiek gaidīts būla tipa vērtība
+10=Tiek gaidīts TAD
+11=Tiek gaidīts DARĪT
+12=Tiek gaidīts LĪDZ
+30=Tiek gaidīts (
+31=Tiek gaidīts )
+32=Tiek gaidīts operators
+40=Šī nav vērtība
+41=Šis nav vesels skaitlis
+42=Atgrieztā vērtība netiek izmantota
+43=Šī nav procedūra
+50=Dalītājs nav pozitīvs
+51=Dalīšana ar nulli
+52=Nekorekts var-parametrs
+59=Piešķiršana konstantē
+60=Tipi ir nesaderīgi
+61=Nedeklarēts vārds
+62=Vārds jau ir deklarēts
+63=Modulis neeksistē
+64=Tiek gaidīti procedūras parametri
+65=Pārāk maz parametru
+66=Pārāk daudz parametru
+67=Salīdzināšana iespējama tikai uz = un #
+90=Moduļa vārds nesakrīt
+91=Nav iespējams noteikt valodu
+110=Rinda ir pārāk gara
+111=Veselskaitļu pārpilde
+112=Reģistru steka pārpilde
+114=Nezināms atslēgas vārds (kļūda valodas datnē))
+115=Virkņu literāļi nav realizēti
+
+[risc]
+1=Modulis
+2=veiksmīgi kompilēts.
+3=Kompilācija neveiksmīga.
+5=Tiek palaista virtuālā mašīna.
+6=Mašīna nostrādājusi bez kļūdām.
+7=Nav iespējams ielādēt moduli.
+8=Mašīna apstājusies ar kļūdas kodu
+
