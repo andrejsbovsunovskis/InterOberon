@@ -22,13 +22,22 @@ CONST
   rangeError = 8;
 
   (** RISC Message Codes **)
-  compileOk1*  = 1;
-  compileOk2*  = 2;
-  compileFail* = 3;
-  vmStarting*  = 5;
-  vmOk*        = 6;
-  cantLoadMod* = 7;
-  vmHalt*      = 8;
+  compileOk1*     = 1;
+  compileOk2*     = 2;
+  compileFail*    = 3;
+  vmStarting*     = 5;
+  vmOk*           = 6;
+  cantLoadMod*    = 7;
+  vmHalt*         = 8;
+  fileNotLoaded*  = 9;
+  linkFail*       = 10;
+  cantCreateFile* = 11;
+  invalidObjFile* = 12;
+  linkComplete*   = 13;
+  cantCreateExe*  = 14;
+  cantOpenObj*    = 15;
+  cantCreateSym*  = 16;
+  running*        = 17;
 
   (** - **)
   maxInt = 2147483647;
@@ -62,7 +71,7 @@ VAR
 
   (** Loaded strings **)
   errors: ARRAY 128, 80 OF CHAR; (** error code < 128, error length < 80 *)
-  risc: ARRAY 10, 80 OF CHAR; (** 10 RISC messages, length < 80 *)
+  risc: ARRAY 20, 80 OF CHAR; (** 20 RISC messages, length < 80 *)
   kw: ARRAY 32 OF Pair; (** 32 keywords like BEGIN *)
   uni: ARRAY 5 OF Pair; (** 5 universe objects like INTEGER *)
   mods: ARRAY 2 OF Module; (** 2 modules like Out *)

@@ -48,8 +48,11 @@ CONST
   eot        = 70; (** End of text *)
 
   (** - **)
-  maxInt*  = 2147483647;
-  minInt*  = -maxInt - 1;
+  maxInt* = 2147483647;
+  minInt* = -maxInt - 1;
+  maxTrans*    = 8;    (** Max translation entries in a comment *)
+  maxLangLen*  = 5;    (** Max length of a language code *)
+  maxTransLen* = 2048; (** Max length of a translation string *)
 
 VAR
   moduleFname: ARRAY 128 OF CHAR;
@@ -66,6 +69,10 @@ VAR
 
   error*: BOOLEAN; (* FALSE if ok *)
   errPos: INTEGER; (* Position of last error *)
+
+  transCount*: INTEGER;
+  transLang*: ARRAY maxTrans, maxLangLen + 1 OF CHAR;
+  transNames*: ARRAY maxTrans, maxTransLen + 1 OF CHAR;
 
 PROCEDURE Read;
 BEGIN
@@ -114,25 +121,17 @@ BEGIN
   END
 END Mark;
 
-(** Skips a possibly nested comment. Begins on ch = '*' after '(',
-    ends with a character after ')'. *)
-PROCEDURE Comment;
-VAR end: BOOLEAN;
+PROCEDURE LatinToLower(ch: CHAR): CHAR;
 BEGIN
-  Read;
-  end := FALSE;
-  REPEAT
-    IF ch = '(' THEN 
-      Read;
-      IF ch = '*' THEN Comment END
-    ELSIF ch = '*' THEN
-      Read;
-      IF ch = ')' THEN Read; end := TRUE END
-    ELSIF ch = 0X THEN end := TRUE
-    ELSE Read
-    END
-  UNTIL end
-END Comment;
+  IF ('A' <= ch) & (ch <= 'Z') THEN
+    ch := CHR(ORD(ch) + (ORD('a') - ORD('A')))
+  END
+RETURN ch END LatinToLower;
+
+PROCEDURE IsLatin(c: CHAR): BOOLEAN;
+RETURN ( 'a' <= c) & (c <=  'z') OR
+       ( 'A' <= c) & (c <=  'Z')
+END IsLatin;
 
 PROCEDURE IsLetter(c: CHAR): BOOLEAN;
 RETURN ( 'a' <= c) & (c <=  'z') OR
@@ -149,12 +148,90 @@ RETURN ( 'a' <= c) & (c <=  'z') OR
        (10A0X <= c) & (c <= 10FFX)    (* Georgian *)
 END IsLetter;
 
+(** Skips a possibly nested comment. Begins on ch = '*' after '(',
+    ends with a character after ')'.
+    Detects translation comments of the form
+    "( **%XX:name1,name2%YY:name1,name2* )"
+    and stores translations in transLang/transNames. *)
+PROCEDURE Comment;
+VAR end, trans: BOOLEAN;
+  i, depth: INTEGER;
+BEGIN
+  Read; (* Skip the first '*' after '(' *)
+  trans := FALSE;
+  end := FALSE;
+  IF ch = '*' THEN
+    Read;
+    IF ch = '%' THEN
+      (* Translation comment ( **%XX:name...* ) *)
+      trans := TRUE;
+      transCount := 0;
+      WHILE (ch = '%') & (transCount < maxTrans) DO
+        Read; (* skip % *)
+        i := 0;
+        WHILE (ch # ':') & (ch # 0X) & (ch # '*') DO
+          IF ~IsLatin(ch) OR (i = maxLangLen) THEN
+            Mark(E.badTransLang)
+          ELSE
+            transLang[transCount, i] := LatinToLower(ch);
+            INC(i)
+          END;
+          Read
+        END;
+        transLang[transCount, i] := 0X;
+        IF ch = ':' THEN Read ELSE Mark(E.expColonTrans) END;
+        i := 0;
+        WHILE (ch # '%') & (ch # '*') & (ch # 0X) DO
+          IF IsLetter(ch) OR (ch = ',') THEN
+            IF i # maxTransLen THEN transNames[transCount, i] := ch; INC(i)
+            ELSE Mark(E.longTransName)
+            END
+          ELSE Mark(E.badTransName)
+          END;
+          Read
+        END;
+        transNames[transCount, i] := 0X;
+        INC(transCount)
+      END;
+
+      (* Skip to end of translation comment *)
+      REPEAT
+        IF ch = '*' THEN Read;
+          IF ch = ')' THEN Read; end := TRUE END
+        ELSIF ch = 0X THEN Mark(E.commentNotClosed); end := TRUE
+        ELSE Read
+        END
+      UNTIL end
+
+    ELSIF ch = ')' THEN
+      Read; (* Empty ( ** ) comment *)
+      end := TRUE
+    END
+  END;
+  IF ~trans & ~end THEN
+    (* Regular comment — iterative nesting via depth counter *)
+    depth := 1;
+    REPEAT
+      IF ch = '(' THEN 
+        Read;
+        IF ch = '*' THEN INC(depth); Read END
+      ELSIF ch = '*' THEN
+        Read;
+        IF ch = ')' THEN DEC(depth); Read END
+      ELSIF ch = 0X THEN Mark(E.commentNotClosed); depth := 0
+      ELSE Read
+      END
+    UNTIL depth = 0
+  END
+END Comment;
+
 PROCEDURE Get*(VAR sym: INTEGER);
 VAR quote: CHAR;
   marked: BOOLEAN;
   n: INTEGER;
   kw: ARRAY 32 OF CHAR;
 BEGIN
+  transCount := 0;
   REPEAT
     (* Skip whitespaces *)
     WHILE (ch # 0X) & (ch <= ' ') DO Read END;

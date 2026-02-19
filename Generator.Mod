@@ -1,5 +1,5 @@
 MODULE Generator;
-IMPORT ST := SymTable, S := Scanner, E := ErrorMsg, Out, Files, Strings;
+IMPORT ST := SymTable, S := Scanner, E := ErrorMsg, Out, Files, Strings, Lang;
 
 CONST
   (** Values of Item.mode **)
@@ -487,8 +487,8 @@ BEGIN
     Files.Set(R, F, 0);
     Files.WriteInt(R, fileMark);
     codeStart := Files.Pos(R)
-  ELSE Out.String('Невозможно создать файл "'); Out.String(s);
-    Out.String('".'); Out.Ln
+  ELSE Lang.Write(Lang.cantCreateFile); Out.Char(' '); Out.Char('"');
+    Out.String(s); Out.Char('"'); Out.Char('.'); Out.Ln
   END
 END Open;
 

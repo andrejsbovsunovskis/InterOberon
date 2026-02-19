@@ -10,7 +10,13 @@ VAR
   Expr0: PROCEDURE(VAR x: G.Item);
   StatSeq0: PROCEDURE;
 
-  modName*: ARRAY 64 OF CHAR; (** Name of last compiled module *)
+  modName: ST.Name; (** Names of last compiled module *)
+
+(** Returns name of the last compiled module in current language. *)
+PROCEDURE GetModName*(VAR name: ARRAY OF CHAR);
+BEGIN
+  ST.GetName(modName, name)
+END GetModName;
 
 PROCEDURE Load*(fname: ARRAY OF CHAR): BOOLEAN;
 VAR ok: BOOLEAN;
@@ -79,19 +85,32 @@ BEGIN
   END
 END Type;
 
+PROCEDURE CheckExport(VAR exported: BOOLEAN);
+BEGIN
+  IF sym = S.times THEN
+    S.Get(sym);
+    exported := TRUE
+  ELSE
+    exported := FALSE
+  END
+END CheckExport;
+
 (** VarDecl = IdentList ":" Type. *)
-PROCEDURE VarDecl;
+PROCEDURE VarDecl(VAR firstObj: ST.Object);
 VAR p, q: ST.Object;
   T: ST.Type;
 BEGIN
   (* Save pointer to the first object created below *)
   p := ST.NewObject(ST.Var, S.id);
+  firstObj := p;
   S.Get(sym);
+  CheckExport(p.exported);
   WHILE sym = S.comma DO
     S.Get(sym);
     IF sym = S.ident THEN
       q := ST.NewObject(ST.Var, S.id);
-      S.Get(sym)
+      S.Get(sym);
+      CheckExport(q.exported)
     ELSE S.Mark(E.expIdent)
     END
   END;
@@ -111,12 +130,46 @@ END VarDecl;
 
 (** DeclSeq = [VAR {VarDecl ";"}]. *)
 PROCEDURE DeclSeq;
+VAR firstVar, p: ST.Object;
+  i, j: INTEGER;
+  name: ARRAY 64 OF CHAR;
+
+  (** Read one translated identifier from S.transNames[i] starting
+      at position j, until ',' or 0X, and advance j accordingly. *)
+  PROCEDURE ReadTrans(i: INTEGER; VAR j: INTEGER; VAR name: ARRAY OF CHAR);
+  VAR k: INTEGER;
+  BEGIN
+    k := 0;
+    WHILE (S.transNames[i, j] # 0X) & (S.transNames[i, j] # ',') DO
+      IF k # LEN(name) - 1 THEN
+        name[k] := S.transNames[i, j]; INC(k)
+      ELSE
+        S.Mark(E.longTransName)
+      END;
+      INC(j)
+    END;
+    name[k] := 0X
+  END ReadTrans;
+
 BEGIN
   IF sym = S.var THEN
     S.Get(sym);
     WHILE sym = S.ident DO
-      VarDecl;
-      IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END
+      VarDecl(firstVar);
+      IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END;
+      IF S.transCount > 0 THEN
+        FOR i := 0 TO S.transCount - 1 DO
+          ST.AddLang(S.transLang[i]);
+          p := firstVar;
+          j := 0;
+          WHILE (p # ST.dummy) & (S.transNames[i, j] # 0X) DO
+            ReadTrans(i, j, name);
+            ST.SetNameLang(p.names, S.transLang[i], name);
+            INC(j);
+            p := p.next
+          END
+        END
+      END
     END
   END
 END DeclSeq;
@@ -519,15 +572,25 @@ END StatSeq;
 (** Module = MODULE ident ";" [IMPORT ImportList] DeclSeq
              [BEGIN StatSeq] END ident ".". *)
 PROCEDURE Module;
+VAR nameStr: ARRAY 64 OF CHAR;
+  i: INTEGER;
 BEGIN
   varsize := 0;
   IF sym = S.module THEN
     S.Get(sym);
     IF sym = S.ident THEN
-      Strings.Copy(S.id, modName);
-      G.Open(modName);
+      modName := NIL;
+      ST.SetName(modName, S.id);
+      GetModName(nameStr);
+      G.Open(nameStr);
       S.Get(sym);
       IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END;
+
+      (* Apply translation names for module *)
+      FOR i := 0 TO S.transCount - 1 DO
+        ST.AddLang(S.transLang[i]);
+        ST.SetNameLang(modName, S.transLang[i], S.transNames[i])
+      END;
 
       IF sym = S.import THEN S.Get(sym); ImportList END;
       DeclSeq;
@@ -536,7 +599,8 @@ BEGIN
       IF sym = S.end THEN
         S.Get(sym);
         IF sym = S.ident THEN
-          IF modName # S.id THEN S.Mark(E.modNameMismatch) END;
+          GetModName(nameStr);
+          IF nameStr # S.id THEN S.Mark(E.modNameMismatch) END;
           S.Get(sym);
           IF sym = S.period THEN S.Get(sym) ELSE S.Mark(E.expPeriod) END
         ELSE S.Mark(E.expIdent)
@@ -547,13 +611,16 @@ BEGIN
     END
   ELSE S.Mark(E.expModule)
   END;
-  IF ~S.error THEN G.Close END
+  IF ~S.error THEN 
+    G.Close;
+    ST.ExportModule(modName)
+  END
 END Module;
 
 PROCEDURE Compile*(): BOOLEAN;
 BEGIN
   S.Get(sym);
-  ST.Init;
+  ST.Init(Lang.curLang);
   G.Init;
   Module
 RETURN ~S.error END Compile;

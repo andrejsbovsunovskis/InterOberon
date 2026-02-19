@@ -1,6 +1,8 @@
-_Build
-InterOberon
+/_Build
+/InterOberon
+/Factorize
 *.swp
 *.o
+*.sym
 *.hex
 .DS_Store

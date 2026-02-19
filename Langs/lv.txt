@@ -75,6 +75,11 @@ Int=Veselais
 112=Reģistru steka pārpilde
 114=Nezināms atslēgas vārds (kļūda valodas datnē))
 115=Virkņu literāļi nav realizēti
+116=Nederīgs valodas kods tulkojuma komentārā
+117=Tiek gaidīts kols tulkojuma komentārā
+118=Komentārs nav aizvērts
+119=Tulkots identifikators pārāk garš
+120=Nederīga rakstzīme tulkotā identifikatorā
 
 [risc]
 1=Modulis
@@ -84,4 +89,12 @@ Int=Veselais
 6=Mašīna nostrādājusi bez kļūdām.
 7=Nav iespējams ielādēt moduli.
 8=Mašīna apstājusies ar kļūdas kodu
-
+9=Datne nav ielādēta.
+10=Kompilēšana neveiksmīga.
+11=Nav iespējams izveidot datni
+12=Nekorekts objekt-datnes formāts.
+13=Kompilēšana pabeigta:
+14=Nav iespējams izveidot izpild-datni
+15=Nav iespējams atvērt objekt-datni
+16=Nav iespējams izveidot simbolu datni
+17=Palaišana

@@ -45,6 +45,11 @@ CONST
 
   unknownKW*         = 114;
   stringTodo*        = 115;
+  badTransLang*      = 116;
+  expColonTrans*     = 117;
+  commentNotClosed*  = 118;
+  longTransName*     = 119;
+  badTransName*      = 120;
 
 PROCEDURE Get*(n: INTEGER; VAR s: ARRAY OF CHAR);
 BEGIN

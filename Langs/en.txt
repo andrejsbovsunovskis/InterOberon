@@ -75,6 +75,11 @@ Int=Int
 112=Register stack overflow
 114=Unknown key word (error in the language file)
 115=String literals not implemented
+116=Invalid language code in translation comment
+117=Colon expected in translation comment
+118=Comment not closed
+119=Translated identifier too long
+120=Invalid character in translated identifier
 
 [risc]
 1=Module
@@ -84,4 +89,12 @@ Int=Int
 6=Machine finished with no errors.
 7=Failed to load module.
 8=Machine halted with error code
-
+9=File not loaded.
+10=Linking failed.
+11=Cannot create file
+12=Invalid object file format.
+13=Linking complete:
+14=Cannot create executable file
+15=Cannot open object file
+16=Cannot create symbol file
+17=Running

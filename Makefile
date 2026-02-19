@@ -6,7 +6,8 @@ InterOberon: *.Mod
 	fob InterOberon.Mod
 
 run: all
-	./InterOberon Examples/Factorize.Mod
+	./InterOberon -c Examples/Тест.Mod
+	hexutf Тест.sym
 
 clean:
 	rm -rf _Build InterOberon
