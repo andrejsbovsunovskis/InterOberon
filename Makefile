@@ -6,8 +6,10 @@ InterOberon: *.Mod
 	fob InterOberon.Mod
 
 run: all
-	./InterOberon -c Examples/Тест.Mod
-	hexutf Тест.sym
+	./InterOberon -c Examples/Example.Mod
+	@hexutf Example.sym
+	@echo ----------------- machine code -----------------
+	@hexutf Example.o
 
 clean:
 	rm -rf _Build InterOberon
