@@ -6,10 +6,13 @@ InterOberon: *.Mod
 	fob InterOberon.Mod
 
 run: all
-	./InterOberon -c Examples/Example.Mod
-	@hexutf Example.sym
-	@echo ----------------- machine code -----------------
+	./InterOberon Examples/Example.Mod
+	#@echo ----------------- symbol file -----------------
+	#@hexutf Example.sym
+	@echo ----------------- object file -----------------
 	@hexutf Example.obj
+	@echo ----------------- executable ------------------
+	@hexutf Example
 
 clean:
 	rm -rf _Build InterOberon

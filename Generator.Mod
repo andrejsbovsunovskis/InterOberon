@@ -120,6 +120,41 @@ BEGIN
   DWord(n)
 END Svc;
 
+(** SUB SP, SP, #{imm} *)
+PROCEDURE SubImmSP*(imm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 51000000H + imm * 400H + 3FFH;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END SubImmSP;
+
+(** ADD SP, SP, #{imm} *)
+PROCEDURE AddImmSP*(imm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 11000000H + imm * 400H + 3FFH;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END AddImmSP;
+
+(** STRB w{rt}, [x{rn}, #{imm}] *)
+PROCEDURE Strb*(rt, rn, imm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 39000000H + imm * 400H + rn * 20H + rt;
+  DWord(n)
+END Strb;
+
+(** MOV x{rd}, x{rn}  —  encoded as ADD x{rd}, x{rn}, #0 *)
+PROCEDURE MovReg*(rd, rn: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 11000000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END MovReg;
+
 PROCEDURE Here*(): INTEGER;
 RETURN Files.Pos(codeR) END Here;
 
