@@ -1,13 +1,13 @@
 MODULE Parser;
 IMPORT S := Scanner, ST := SymTable, E := ErrorMsg, Strings,
-  G := Generator, Out, Lang;
+  Generator, Emitter, Out, Lang;
 
 VAR
   sym: INTEGER;
   dummy: ST.Object; (** In case of error in QualIdent *)
   varsize: INTEGER; (** How many bytes variables occupy *)
 
-  Expr0: PROCEDURE(VAR x: G.Item);
+  Expr0: PROCEDURE(VAR x: Emitter.Item);
   StatSeq0: PROCEDURE;
 
   modName: ST.Name; (** Names of last compiled module *)
@@ -30,7 +30,7 @@ BEGIN
   IF ~ok THEN S.Mark(E.unknownLang) END
 RETURN ok END Load;
 
-PROCEDURE CheckInt(VAR x: G.Item);
+PROCEDURE CheckInt(VAR x: Emitter.Item);
 BEGIN
   IF x.type.form # ST.Int THEN
     S.Mark(E.notInt);
@@ -199,8 +199,8 @@ BEGIN
   END
 END QualIdent;
 
-PROCEDURE StandFunc(VAR x: G.Item; func: INTEGER; resType: ST.Type);
-VAR y: G.Item;
+PROCEDURE StandFunc(VAR x: Emitter.Item; func: INTEGER; resType: ST.Type);
+VAR y: Emitter.Item;
   n: INTEGER;
 BEGIN
   IF sym = S.lparen THEN
@@ -215,9 +215,9 @@ BEGIN
     IF n # 1 THEN S.Mark(E.moreParams) END;
     IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END;
     IF func = 31 (*ORD*) THEN
-      IF x.type.form = ST.Char THEN G.Ord(x) END
+      IF x.type.form = ST.Char THEN Emitter.Ord(x) END
     ELSIF func = 32 (*CHR*) THEN
-      IF x.type.form = ST.Int THEN G.Ord(x) END
+      IF x.type.form = ST.Int THEN Emitter.Ord(x) END
     ELSE ASSERT(FALSE)
     END;
     x.type := resType
@@ -228,15 +228,15 @@ END StandFunc;
 (** Param = Expr.
      par can be NIL *)
 PROCEDURE Param(par: ST.Object);
-VAR x: G.Item;
+VAR x: Emitter.Item;
 BEGIN
   Expr0(x);
   IF par # NIL THEN
     IF ST.TypesCompatible(par.type, x.type) THEN
       IF par.class = ST.Var THEN
-        G.ValueParam(x)
+        Emitter.ValueParam(x)
       ELSE (* par.class = ST.Par *)
-        G.VarParam(x)
+        Emitter.VarParam(x)
       END
     ELSE S.Mark(E.incompatible)
     END
@@ -244,7 +244,7 @@ BEGIN
 END Param;
 
 (** ActualParams = "(" [Expr {"," Expr}] ")". *)
-PROCEDURE ActualParams(VAR x: G.Item);
+PROCEDURE ActualParams(VAR x: Emitter.Item);
 VAR n: INTEGER;
   par: ST.Object;
 BEGIN
@@ -268,7 +268,7 @@ END ActualParams;
 
 (* Factor = Designator [ActualParams] | Number | String |
    FALSE | TRUE | "(" Expr ")" | "~" Factor. *)
-PROCEDURE Factor(VAR x: G.Item);
+PROCEDURE Factor(VAR x: Emitter.Item);
 VAR obj: ST.Object;
 BEGIN
   IF sym = S.lparen THEN
@@ -276,36 +276,36 @@ BEGIN
     Expr0(x);
     IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END
   ELSIF sym = S.int THEN
-    G.MakeConstItem(x, ST.intType, S.ival);
+    Emitter.MakeConstItem(x, ST.intType, S.ival);
     S.Get(sym)
   ELSIF sym = S.ident THEN
     QualIdent(obj);
     IF obj.class = ST.SFunc THEN StandFunc(x, obj.val, obj.type)
-    ELSE G.MakeItem(x, obj)
+    ELSE Emitter.MakeItem(x, obj)
     END
   ELSIF sym = S.string THEN
-    G.MakeConstItem(x, ST.charType, ORD(S.sval[0]));
+    Emitter.MakeConstItem(x, ST.charType, ORD(S.sval[0]));
     IF S.len # 1 THEN S.Mark(E.stringTodo) END;
     S.Get(sym)
   ELSIF (sym = S.false) OR (sym = S.true) THEN
-    G.MakeConstItem(x, ST.boolType, ORD(sym = S.true));
+    Emitter.MakeConstItem(x, ST.boolType, ORD(sym = S.true));
     S.Get(sym)
   ELSIF sym = S.not THEN
     S.Get(sym);
     Factor(x);
     IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
-    G.Not(x)
-  ELSIF sym = S.false THEN G.MakeConstItem(x, ST.boolType, 0)
-  ELSIF sym = S.true THEN G.MakeConstItem(x, ST.boolType, 1)
+    Emitter.Not(x)
+  ELSIF sym = S.false THEN Emitter.MakeConstItem(x, ST.boolType, 0)
+  ELSIF sym = S.true THEN Emitter.MakeConstItem(x, ST.boolType, 1)
   ELSE S.Mark(E.notValue)
   END
 END Factor;
 
 (* Term = Factor [MulOperator Factor].
    MulOperator = "*" | DIV | MOD | "&". *)
-PROCEDURE Term(VAR x: G.Item);
+PROCEDURE Term(VAR x: Emitter.Item);
 VAR op: INTEGER;
-  y: G.Item;
+  y: Emitter.Item;
 BEGIN
   Factor(x);
   WHILE (S.times <= sym) & (sym <= S.and) DO
@@ -313,15 +313,15 @@ BEGIN
     S.Get(sym);
     IF op = S.and THEN
       IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
-      G.And1(x);
+      Emitter.And1(x);
       Factor(y);
       IF y.type.form # ST.Bool THEN S.Mark(E.expBool) END;
-      G.And2(x, y)
+      Emitter.And2(x, y)
     ELSE (* sym = one of mul, div, mod *)
       Factor(y);
       IF x.type.form = ST.Int THEN
         CheckInt(y);
-        G.MulOp(op, x, y)
+        Emitter.MulOp(op, x, y)
       ELSE S.Mark(E.incompatible)
       END
     END
@@ -330,9 +330,9 @@ END Term;
 
 (* SimpleExpr = ["+" | "-"] Term [AddOperator Term].
    AddOperator = "+" | "-". *)
-PROCEDURE SimpleExpr(VAR x: G.Item);
+PROCEDURE SimpleExpr(VAR x: Emitter.Item);
 VAR op: INTEGER;
-  y: G.Item;
+  y: Emitter.Item;
   minus: BOOLEAN;
 BEGIN
   IF sym = S.minus THEN S.Get(sym); minus := TRUE
@@ -340,21 +340,21 @@ BEGIN
     IF sym = S.plus THEN S.Get(sym) END
   END;
   Term(x);
-  IF minus THEN G.Neg(x) END;
+  IF minus THEN Emitter.Neg(x) END;
   WHILE (S.plus <= sym) & (sym <= S.or) DO
     op := sym;
     S.Get(sym);
     IF op = S.or THEN
       IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
-      G.Or1(x);
+      Emitter.Or1(x);
       Term(y);
       IF y.type.form # ST.Bool THEN S.Mark(E.expBool) END;
-      G.Or2(x, y)
+      Emitter.Or2(x, y)
     ELSE (* sym = plus or minus *)
       Term(y);
       IF x.type.form = ST.Int THEN
         CheckInt(y);
-        G.AddOp(op, x, y)
+        Emitter.AddOp(op, x, y)
       ELSE S.Mark(E.incompatible)
       END
     END
@@ -362,9 +362,9 @@ BEGIN
 END SimpleExpr;
 
 (* Expr = SimpleExpr [relation SimpleExpr]. *)
-PROCEDURE Expr(VAR x: G.Item);
+PROCEDURE Expr(VAR x: Emitter.Item);
 VAR op: INTEGER;
-  y: G.Item;
+  y: Emitter.Item;
 BEGIN
   SimpleExpr(x);
   IF (S.eql <= sym) & (sym <= S.geq) THEN
@@ -372,10 +372,10 @@ BEGIN
     S.Get(sym);
     SimpleExpr(y);
     IF (x.type.form IN {ST.Char, ST.Int}) & (x.type = y.type) THEN
-      G.IntRel(op, x, y);
+      Emitter.IntRel(op, x, y);
       x.type := ST.boolType
     ELSIF x.type.form = ST.Bool THEN
-      IF op <= S.neq THEN G.IntRel(op, x, y)
+      IF op <= S.neq THEN Emitter.IntRel(op, x, y)
       ELSE S.Mark(E.onlyEqlNeq)
       END
     ELSE S.Mark(E.incompatible)
@@ -385,29 +385,29 @@ END Expr;
 
 (** Assign = Designator ":=" Expr. *)
 PROCEDURE Assign(obj: ST.Object);
-VAR x, y: G.Item;
+VAR x, y: Emitter.Item;
 BEGIN
-  G.MakeItem(x, obj); 
+  Emitter.MakeItem(x, obj); 
   Expr(y);
-  G.Assign(x, y)
+  Emitter.Assign(x, y)
 END Assign;
 
 (** ProcedureCall = Designator [ActualParams]. *)
 PROCEDURE ProcedureCall(obj: ST.Object);
-VAR x: G.Item;
+VAR x: Emitter.Item;
   rx: INTEGER;
 BEGIN
-  G.MakeItem(x, obj);
+  Emitter.MakeItem(x, obj);
   IF sym = S.lparen THEN (* With parameters *)
     IF x.type.form # ST.Proc THEN S.Mark(E.notProcedure)
     ELSE
       IF x.type.base.form # ST.NoTyp THEN S.Mark(E.notUsed) END;
-      G.PrepCall(x, rx); ActualParams(x); G.Call(x, rx)
+      Emitter.PrepCall(x, rx); ActualParams(x); Emitter.Call(x, rx)
     END
   ELSIF x.type.form = ST.Proc THEN (* Procedure with no parameters *)
     IF x.type.nofpars > 0 THEN S.Mark(E.noParams) END;
     IF x.type.base.form # ST.NoTyp THEN S.Mark(E.notUsed)
-    ELSE G.PrepCall(x, rx); G.Call(x, rx)
+    ELSE Emitter.PrepCall(x, rx); Emitter.Call(x, rx)
     END
   ELSE S.Mark(E.expStatement)
   END
@@ -417,7 +417,7 @@ END ProcedureCall;
     {ELSIF expression THEN StatementSequence}
     [ELSE StatementSequence] END. *)
 PROCEDURE IfStatement;
-VAR x: G.Item;
+VAR x: Emitter.Item;
   L: INTEGER;
 BEGIN
   S.Get(sym);
@@ -425,7 +425,7 @@ BEGIN
   IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
 
   (* CONDITIONAL JUMP *)
-  G.CFJump(x);
+  Emitter.CFJump(x);
 
   IF sym = S.then THEN S.Get(sym) ELSE S.Mark(E.expThen) END;
 
@@ -435,17 +435,17 @@ BEGIN
     S.Get(sym);
 
     (* UNCONDITIONAL JUMP *)
-    G.FJump(L);
+    Emitter.FJump(L);
 
     (* FIXUP CONDITIONAL JUMP *)
-    G.Fixup(x);
+    Emitter.Fixup(x);
 
     Expr(x);
     IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
     IF sym = S.then THEN S.Get(sym) ELSE S.Mark(E.expThen) END;
 
     (* CONDITIONAL JUMP *)
-    G.CFJump(x);
+    Emitter.CFJump(x);
 
     StatSeq0
   END;
@@ -454,74 +454,74 @@ BEGIN
     S.Get(sym);
 
     (* UNCONDITIONAL JUMP *)
-    G.FJump(L);
+    Emitter.FJump(L);
 
     (* FIXUP CONDITIONAL JUMP *)
-    G.Fixup(x);
+    Emitter.Fixup(x);
 
     StatSeq0
   ELSE
     (* FIXUP CONDITIONAL JUMP *)
-    G.Fixup(x)
+    Emitter.Fixup(x)
   END;
 
   IF sym = S.end THEN S.Get(sym) ELSE S.Mark(E.expEnd) END;
 
   (* FIXUP UNCONDITIONAL JUMP *)
-  G.FixLink(L)
+  Emitter.FixLink(L)
 END IfStatement;
 
 (** WhileStatement = WHILE expression DO StatementSequence
     {ELSIF expression DO StatementSequence} END. *)
 PROCEDURE WhileStatement;
-VAR x: G.Item;
+VAR x: Emitter.Item;
   L: INTEGER;
 BEGIN
-  L := G.Here();
+  L := Generator.Here();
   S.Get(sym);
   Expr(x);
   IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
 
   (* CONDITIONAL JUMP *)
-  G.CFJump(x);
+  Emitter.CFJump(x);
 
   IF sym = S.do THEN S.Get(sym) ELSE S.Mark(E.expDo) END;
 
   StatSeq0;
 
   (* UNCONDITIONAL BACK JUMP TO START OF LOOP *)
-  G.BJump(L);
+  Emitter.BJump(L);
 
   WHILE sym = S.elsif DO
     S.Get(sym);
 
     (* FIXUP CONDITIONAL JUMP *)
-    G.Fixup(x);
+    Emitter.Fixup(x);
 
     Expr(x);
     IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
     IF sym = S.do THEN S.Get(sym) ELSE S.Mark(E.expDo) END;
 
     (* CONDITIONAL JUMP *)
-    G.CFJump(x);
+    Emitter.CFJump(x);
 
     StatSeq0;
 
     (* UNCONDITIONAL BACK JUMP TO START OF LOOP *)
-    G.BJump(L)
+    Emitter.BJump(L)
   END;
 
   (* FIXUP CONDITIONAL JUMP *)
-  G.Fixup(x);
+  Emitter.Fixup(x);
 
   IF sym = S.end THEN S.Get(sym) ELSE S.Mark(E.expEnd) END
 END WhileStatement;
 
 PROCEDURE RepeatStatement;
-VAR x: G.Item;
+VAR x: Emitter.Item;
   L: INTEGER;
 BEGIN
-  L := G.Here();
+  L := Generator.Here();
   S.Get(sym);
 
   StatSeq0;
@@ -532,7 +532,7 @@ BEGIN
     IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
 
     (* CONDITIONAL BACK JUMP TO START OF LOOP *)
-    G.CBJump(x, L)
+    Emitter.CBJump(x, L)
   END
 END RepeatStatement;
 
@@ -582,7 +582,7 @@ BEGIN
       modName := NIL;
       ST.SetName(modName, S.id);
       GetModName(nameStr);
-      G.Open(nameStr);
+      Generator.Open(nameStr);
       S.Get(sym);
       IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END;
 
@@ -612,7 +612,7 @@ BEGIN
   ELSE S.Mark(E.expModule)
   END;
   IF ~S.error THEN 
-    G.Close;
+    Generator.Close;
     ST.ExportModule(modName)
   END
 END Module;
@@ -621,7 +621,7 @@ PROCEDURE Compile*(): BOOLEAN;
 BEGIN
   S.Get(sym);
   ST.Init(Lang.curLang);
-  G.Init;
+  Generator.Init;
   Module
 RETURN ~S.error END Compile;
 

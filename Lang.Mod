@@ -21,24 +21,6 @@ CONST
   unexpEot   = 7;
   rangeError = 8;
 
-  (** RISC Message Codes **)
-  compileOk1*     = 1;
-  compileOk2*     = 2;
-  compileFail*    = 3;
-  vmStarting*     = 5;
-  vmOk*           = 6;
-  cantLoadMod*    = 7;
-  vmHalt*         = 8;
-  fileNotLoaded*  = 9;
-  linkFail*       = 10;
-  cantCreateFile* = 11;
-  invalidObjFile* = 12;
-  linkComplete*   = 13;
-  cantCreateExe*  = 14;
-  cantOpenObj*    = 15;
-  cantCreateSym*  = 16;
-  running*        = 17;
-
   (** - **)
   maxInt = 2147483647;
 
@@ -341,9 +323,9 @@ PROCEDURE GetErrorText*(n: INTEGER; VAR s: ARRAY OF CHAR);
 BEGIN Strings.Copy(errors[n], s)
 END GetErrorText;
 
-PROCEDURE Write*(msg: INTEGER);
-BEGIN Out.String(risc[msg])
-END Write;
+PROCEDURE GetRiscText*(n: INTEGER; VAR s: ARRAY OF CHAR);
+BEGIN Strings.Copy(risc[n], s)
+END GetRiscText;
 
 BEGIN
   error := TRUE

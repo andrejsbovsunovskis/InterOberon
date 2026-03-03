@@ -2,7 +2,7 @@
 /InterOberon
 /Factorize
 *.swp
-*.o
+*.obj
 *.sym
 *.hex
 .DS_Store

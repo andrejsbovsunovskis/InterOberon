@@ -9,7 +9,7 @@ run: all
 	./InterOberon -c Examples/Example.Mod
 	@hexutf Example.sym
 	@echo ----------------- machine code -----------------
-	@hexutf Example.o
+	@hexutf Example.obj
 
 clean:
 	rm -rf _Build InterOberon

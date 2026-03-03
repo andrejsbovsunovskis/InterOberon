@@ -1,10 +1,10 @@
 MODULE Linker;
-IMPORT Files, Strings, Out, Lang;
+IMPORT Files, Strings, E := ErrorMsg, M := Machine;
 
 CONST
   version = 1;
   (** Object file mark *)
-  objFileMark = ORD('R') + 256 * (ORD('S') + 256 * (ORD('C') + 256 * version));
+  objFileMark = ORD('A') + 256 * (ORD('R') + 256 * (ORD('M') + 256 * version));
   (** Executable file mark *)
   exeFileMark = ORD('E') + 256 * (ORD('X') + 256 * (ORD('E') + 256 * version));
 
@@ -34,7 +34,7 @@ BEGIN
     END;
     ok := TRUE
   ELSE
-    Lang.Write(Lang.invalidObjFile); Out.Ln
+    M.WriteError(E.invalidObjFile)
   END
 RETURN ok END CopyCode;
 
@@ -47,7 +47,7 @@ BEGIN
   
   (* Prepare file names *)
   Strings.Copy(modName, objName);
-  Strings.Append('.o', objName);
+  Strings.Append('.obj', objName);
   Strings.Copy(modName, exeName);
   
   (* Open object file *)
@@ -63,17 +63,14 @@ BEGIN
       (* Copy code *)
       IF CopyCode() THEN
         Files.Register(exeFile);
-        Lang.Write(Lang.linkComplete); Out.Char(' ');
-        Out.String(exeName); Out.Ln;
+        M.WriteS(E.linkComplete, exeName);
         ok := TRUE
       END
     ELSE
-      Lang.Write(Lang.cantCreateExe); Out.Char(' '); Out.Char('"');
-      Out.String(exeName); Out.String('".'); Out.Ln
+      M.WriteErrorS(E.cantCreateExe, exeName)
     END
   ELSE
-    Lang.Write(Lang.cantOpenObj); Out.Char(' '); Out.Char('"');
-    Out.String(objName); Out.String('".'); Out.Ln
+    M.WriteErrorS(E.cantOpenObj, objName)
   END
 RETURN ok END Link;
 

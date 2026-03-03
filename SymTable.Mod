@@ -1,5 +1,5 @@
 MODULE SymTable;
-IMPORT Out, S := Scanner, E := ErrorMsg, Strings, Kernel, L := Lang, Files;
+IMPORT Out, S := Scanner, E := ErrorMsg, Strings, Kernel, L := Lang, M := Machine, Files;
 
 CONST
   (** Object Classes **)
@@ -458,8 +458,7 @@ BEGIN
     Files.Write(R, 0); (* End marker *)
     Files.Register(F)
   ELSE
-    L.Write(L.cantCreateSym); Out.Char(' '); Out.Char('"');
-    Out.String(fname); Out.String('".'); Out.Ln
+    M.WriteErrorS(E.cantCreateSym, fname)
   END
 END ExportModule;
 

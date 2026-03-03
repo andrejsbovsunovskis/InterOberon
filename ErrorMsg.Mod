@@ -1,6 +1,7 @@
 MODULE ErrorMsg;
-IMPORT Lang;
+
 CONST
+  (** Compiler error codes **)
   expModule*         = 1;
   expSemicol*        = 2;
   expIdent*          = 3;
@@ -42,6 +43,7 @@ CONST
   longString*        = 110;
   intOverflow*       = 111;
   regOverflow*       = 112;
+  outOfMemory*       = 113;
 
   unknownKW*         = 114;
   stringTodo*        = 115;
@@ -51,10 +53,23 @@ CONST
   longTransName*     = 119;
   badTransName*      = 120;
 
-PROCEDURE Get*(n: INTEGER; VAR s: ARRAY OF CHAR);
-BEGIN
-  Lang.GetErrorText(n, s);
-  IF s = '' THEN s := 'Unknown error' END
-END Get;
+  (** Machine/RISC message codes **)
+  compileOk1*        = 1;
+  compileOk2*        = 2;
+  compileFail*       = 3;
+  vmStarting*        = 5;
+  vmOk*              = 6;
+  cantLoadMod*       = 7;
+  vmHalt*            = 8;
+  fileNotLoaded*     = 9;
+  linkFail*          = 10;
+  cantCreateFile*    = 11;
+  invalidObjFile*    = 12;
+  linkComplete*      = 13;
+  cantCreateExe*     = 14;
+  cantOpenObj*       = 15;
+  cantCreateSym*     = 16;
+  running*           = 17;
+  msgOutOfMemory*    = 18;
 
 END ErrorMsg.

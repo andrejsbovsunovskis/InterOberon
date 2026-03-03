@@ -1,5 +1,5 @@
 MODULE Scanner;
-IMPORT Files, Out, E := ErrorMsg, Lang;
+IMPORT Files, Out, E := ErrorMsg, Lang, M := Machine;
 
 CONST
   (** Symbols **)
@@ -108,16 +108,12 @@ BEGIN
 RETURN F # NIL END Load;
 
 PROCEDURE Mark*(errCode: INTEGER);
-VAR s: ARRAY 256 OF CHAR;
-  pos: INTEGER;
+VAR pos: INTEGER;
 BEGIN
   error := TRUE; pos := Files.Pos(r);
   IF pos > errPos + 4 THEN
     errPos := pos;
-    Out.String(moduleFname); Out.Char(':');
-    Out.Int(line, 0); Out.Char(':'); Out.Int(col, 0);
-    Out.String(': error: #'); Out.Int(errCode, 0); Out.Char(' ');
-    E.Get(errCode, s); Out.String(s); Out.Ln
+    M.Mark(moduleFname, line, col, errCode)
   END
 END Mark;
 

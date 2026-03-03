@@ -366,7 +366,7 @@ PROCEDURE RunFile*(modName: ARRAY OF CHAR): INTEGER;
 VAR fname: ARRAY 64 OF CHAR;
   res: INTEGER;
 BEGIN
-  Strings.Copy(modName, fname); Strings.Append('.o', fname);
+  Strings.Copy(modName, fname); Strings.Append('.obj', fname);
   Load(fname, res);
   IF res = noError THEN
     res := Run()

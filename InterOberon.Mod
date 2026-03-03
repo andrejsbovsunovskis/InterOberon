@@ -1,5 +1,5 @@
 MODULE InterOberon;
-IMPORT Parser, Args, Out, Risc, Linker, Lang, Platform;
+IMPORT Parser, Args, Out, Risc, Linker, E := ErrorMsg, M := Machine, Platform;
 
 PROCEDURE Usage;
 VAR s: ARRAY 256 OF CHAR;
@@ -8,9 +8,9 @@ BEGIN
   Out.String('InterOberon compiler, 2022-2023'); Out.Ln; Out.Ln;
   Out.String('Usage:'); Out.Ln;
   Out.String('  '); Out.String(s); Out.String(' -c <moduleName>'); Out.Ln;
-  Out.String('    Compile module to .o and .sym files'); Out.Ln;
+  Out.String('    Compile module to .obj and .sym files'); Out.Ln;
   Out.String('  '); Out.String(s); Out.String(' -l <moduleName>'); Out.Ln;
-  Out.String('    Link .o file to executable'); Out.Ln;
+  Out.String('    Link .obj file to executable'); Out.Ln;
   Out.String('  '); Out.String(s); Out.String(' -r <moduleName>'); Out.Ln;
   Out.String('    Run executable'); Out.Ln;
   Out.String('  '); Out.String(s); Out.String(' <moduleName>'); Out.Ln;
@@ -26,26 +26,23 @@ BEGIN
   IF Parser.Load(s) THEN
     IF Parser.Compile() THEN
       Parser.GetModName(mname);
-      Lang.Write(Lang.compileOk1); Out.Char(' ');
-      Out.String(mname); Out.Char(' ');
-      Lang.Write(Lang.compileOk2); Out.Ln; Out.Ln;
-      Lang.Write(Lang.vmStarting); Out.Ln;
+      M.WriteS2(E.compileOk1, mname, E.compileOk2); Out.Ln;
+      M.WriteLn(E.vmStarting);
       res := Risc.RunFile(mname);
       Out.Ln;
       IF res = Risc.noError THEN
-        Lang.Write(Lang.vmOk); Out.Ln
+        M.WriteLn(E.vmOk)
       ELSIF res = Risc.cantLoad THEN
-        Lang.Write(Lang.cantLoadMod); Out.Ln
+        M.WriteError(E.cantLoadMod)
       ELSE
-        Lang.Write(Lang.vmHalt); Out.Char(' ');
-        Out.Int(res, 0); Out.Char('.'); Out.Ln
+        M.WriteErrorI(E.vmHalt, res)
       END
     ELSE
-      Lang.Write(Lang.compileFail); Out.Ln;
+      M.WriteError(E.compileFail);
       res := 1
     END
   ELSE
-    Lang.Write(Lang.fileNotLoaded); Out.Ln;
+    M.WriteError(E.fileNotLoaded);
     res := 1
   END
 RETURN res END RunCompiler;
@@ -60,15 +57,13 @@ BEGIN
   IF Parser.Load(s) THEN
     IF Parser.Compile() THEN
       Parser.GetModName(mname);
-      Lang.Write(Lang.compileOk1); Out.Char(' ');
-      Out.String(mname); Out.Char(' ');
-      Lang.Write(Lang.compileOk2); Out.Ln
+      M.WriteS2(E.compileOk1, mname, E.compileOk2)
     ELSE
-      Lang.Write(Lang.compileFail); Out.Ln;
+      M.WriteError(E.compileFail);
       res := 1
     END
   ELSE
-    Lang.Write(Lang.fileNotLoaded); Out.Ln;
+    M.WriteError(E.fileNotLoaded);
     res := 1
   END
 RETURN res END CompileOnly;
@@ -80,7 +75,7 @@ BEGIN
   res := 0;
   Args.Get(2, s);
   IF ~Linker.Link(s) THEN
-    Lang.Write(Lang.linkFail); Out.Ln;
+    M.WriteError(E.linkFail);
     res := 1
   END
 RETURN res END LinkOnly;
@@ -90,17 +85,15 @@ VAR s: ARRAY 256 OF CHAR;
   res: INTEGER;
 BEGIN
   Args.Get(2, s);
-  Lang.Write(Lang.running); Out.Char(' ');
-  Out.String(s); Out.String('...'); Out.Ln;
+  M.WriteS(E.running, s);
   res := Risc.RunFile(s);
   Out.Ln;
   IF res = Risc.noError THEN
-    Lang.Write(Lang.vmOk); Out.Ln
+    M.WriteLn(E.vmOk)
   ELSIF res = Risc.cantLoad THEN
-    Lang.Write(Lang.cantLoadMod); Out.Ln
+    M.WriteError(E.cantLoadMod)
   ELSE
-    Lang.Write(Lang.vmHalt); Out.Char(' ');
-    Out.Int(res, 0); Out.Char('.'); Out.Ln
+    M.WriteErrorI(E.vmHalt, res)
   END
 RETURN res END RunOnly;
 
