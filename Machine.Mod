@@ -1,5 +1,15 @@
 MODULE Machine;
-IMPORT Out, Lang;
+IMPORT Out, Lang, Platform, Utf8;
+
+TYPE
+  SHORTCHAR = Utf8.SHORTCHAR;
+
+(** Run a command in the OS. For chmod and signing the executable. *)
+PROCEDURE Exec*(command: ARRAY OF CHAR): INTEGER;
+VAR z: ARRAY 4096 OF SHORTCHAR;
+BEGIN
+  Utf8.Encode(command, z);
+RETURN Platform.System(z) END Exec;
 
 (** Gets localized error text by error code. *)
 PROCEDURE GetErrorText*(n: INTEGER; VAR s: ARRAY OF CHAR);

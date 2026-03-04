@@ -66,10 +66,9 @@ CONST
   cantCreateFile*    = 11;
   invalidObjFile*    = 12;
   linkComplete*      = 13;
-  cantCreateExe*     = 14;
-  cantOpenObj*       = 15;
-  cantCreateSym*     = 16;
-  running*           = 17;
-  msgOutOfMemory*    = 18;
+  cantOpenObj*       = 14;
+  cantCreateSym*     = 15;
+  running*           = 16;
+  msgOutOfMemory*    = 17;
 
 END ErrorMsg.
