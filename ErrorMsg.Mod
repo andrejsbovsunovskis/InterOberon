@@ -53,22 +53,18 @@ CONST
   longTransName*     = 119;
   badTransName*      = 120;
 
-  (** Machine/RISC message codes **)
+  (** Compiler message codes **)
   compileOk1*        = 1;
   compileOk2*        = 2;
   compileFail*       = 3;
-  vmStarting*        = 5;
-  vmOk*              = 6;
-  cantLoadMod*       = 7;
-  vmHalt*            = 8;
-  fileNotLoaded*     = 9;
-  linkFail*          = 10;
-  cantCreateFile*    = 11;
-  invalidObjFile*    = 12;
-  linkComplete*      = 13;
-  cantOpenObj*       = 14;
-  cantCreateSym*     = 15;
-  running*           = 16;
-  msgOutOfMemory*    = 17;
+  fileNotLoaded*     = 4;
+  linkFail*          = 5;
+  cantCreateFile*    = 6;
+  invalidObjFile*    = 7;
+  linkComplete*      = 8;
+  cantOpenObj*       = 9;
+  cantCreateSym*     = 10;
+  chmodFailed*       = 11;
+  signFailed*        = 12;
 
 END ErrorMsg.

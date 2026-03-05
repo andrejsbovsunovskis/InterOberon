@@ -5,8 +5,6 @@ CONST
   version = 1;
   (** Object file mark *)
   objFileMark = ORD('A') + 256 * (ORD('R') + 256 * (ORD('M') + 256 * version));
-  (** Executable file mark *)
-  exeFileMark = ORD('E') + 256 * (ORD('X') + 256 * (ORD('E') + 256 * version));
 
 TYPE
   HUGEINT = SYSTEM.INT64;
@@ -16,7 +14,7 @@ VAR
   exeFile: Files.File;
   objRider: Files.Rider;
   exeRider: Files.Rider;
-
+  codeLen: INTEGER; (** Length of the machine code in bytes, read from the .obj file *)
 
 (** Outputs 1 byte to the file. *)
 PROCEDURE Byte(x: BYTE);
@@ -141,11 +139,11 @@ PROCEDURE Command1;
     (* Segment Name *)
     String('__TEXT', 16);
     (* Address *)
-    QWord(1000000H * 100H + 4000H - codeSpace);
+    QWord(1000000H * 100H + 2000H);
     (* Size in bytes *)
     QWord(codeLen);
     (* Offset *)
-    DWord(4000H - codeSpace);
+    DWord(2000H);
     (* Alignment = 2^2 = 4 *)
     DWord(2);
     (* Relocations Offset *)
@@ -167,11 +165,11 @@ PROCEDURE Command1;
     (* Segment Name *)
     String('__TEXT', 16);
     (* Address *)
-    QWord(1000000H * 100H + 4000H - codeSpace + codeLen);
+    QWord(1000000H * 100H + 2000H + codeLen);
     (* Size in bytes *)
-    QWord(codeSpace - codeLen);
+    QWord(2000H - codeLen);
     (* Offset *)
-    DWord(4000H - codeSpace + codeLen);
+    DWord(2000H + codeLen);
     (* Alignment = 2^2 = 4*)
     DWord(2);
     (* Relocations Offset *)
@@ -225,7 +223,7 @@ PROCEDURE Command2;
     (* Address *)
     QWord(100004H * 1000H);
     (* Size in bytes *)
-    QWord(dataLen);
+    QWord(0(*dataLen*));
     (* Offset *)
     DWord(4000H);
     (* Alignment = 2^0 = 1 *)
@@ -452,7 +450,7 @@ BEGIN
   (* Command Size in bytes *)
   DWord(24);
   (* Entry Offset *)
-  QWord(4000H - codeSpace);
+  QWord(2000H);
   (* Initial Stack Size, may be 0 *)
   QWord(0)
 END Command12;
@@ -595,28 +593,20 @@ BEGIN
 END SymbolTable;
 
 (** Read object file and write to executable *)
-PROCEDURE CopyCode(): BOOLEAN;
+PROCEDURE CopyCode();
 VAR mark, n: INTEGER;
   b: BYTE;
-  ok: BOOLEAN;
 BEGIN
-  ok := FALSE;
   Files.ReadInt(objRider, mark);
-  IF mark = objFileMark THEN
-    (* Write executable file mark *)
-    Files.WriteInt(exeRider, exeFileMark);
-    
-    (* Copy rest of the file *)
-    Files.Read(objRider, b);
-    WHILE ~objRider.eof DO
-      Files.Write(exeRider, b);
-      Files.Read(objRider, b)
-    END;
-    ok := TRUE
-  ELSE
-    M.WriteError(E.invalidObjFile)
+  ASSERT(mark = objFileMark); (*!FIXME check this before CopyCode, use E.invalidObjFile*)
+  
+  (* Copy rest of the file *)
+  Files.Read(objRider, b);
+  WHILE ~objRider.eof DO
+    Files.Write(exeRider, b);
+    Files.Read(objRider, b)
   END
-RETURN ok END CopyCode;
+END CopyCode;
 
 PROCEDURE Output;
 BEGIN
@@ -624,12 +614,12 @@ BEGIN
   Commands;
 
   (* Zero-out until position 2000H *)
-  Zeros(2000H - Files.Pos(r));
+  Zeros(2000H - Files.Pos(exeRider));
 
   (* Machine code *)
   CopyCode;
   (* Unwind Info *)
-  Zeros(4000H - Files.Pos(r));
+  Zeros(4000H - Files.Pos(exeRider));
 
   (* Data (global variables) *)
   Zeros(4000H); (*!TODO call something like OutputData*)
@@ -647,16 +637,16 @@ BEGIN
   (* Chmod *)
   s := 'chmod +x ';
   Strings.Append(exeName, s);
-  err := Machine.Exec(s);
+  err := M.Exec(s);
   IF err # 0 THEN
-    Machine.Error(Errors.chmodFailed)
+    M.WriteError(E.chmodFailed)
   ELSE
     (* Sign *)
     s := 'codesign -s - -f --timestamp=none ';
     Strings.Append(exeName, s);
-    err := Machine.Exec(s);
+    err := M.Exec(s);
     IF err # 0 THEN
-      Machine.Error(Errors.signFailed)
+      M.WriteError(E.signFailed)
     END
   END
 END ChmodAndSign;
@@ -677,6 +667,7 @@ BEGIN
   objFile := Files.Old(objName);
   IF objFile # NIL THEN
     Files.Set(objRider, objFile, 0);
+    codeLen := Files.Length(objFile) - 4; (*!FIXME First 4 bytes are the file mark*)
     
     (* Open (new) executable file *)
     exeFile := Files.New(exeName);

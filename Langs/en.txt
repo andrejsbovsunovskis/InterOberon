@@ -82,20 +82,16 @@ Int=Int
 119=Translated identifier too long
 120=Invalid character in translated identifier
 
-[risc]
+[compiler]
 1=Module
 2=has been compiled.
 3=Compilation failed.
-5=Running virtual machine.
-6=Machine finished with no errors.
-7=Failed to load module.
-8=Machine halted with error code
-9=File not loaded.
-10=Linking failed.
-11=Cannot create file
-12=Invalid object file format.
-13=Linking complete:
-14=Cannot open object file
-15=Cannot create symbol file
-16=Running
-17=Out of memory
+4=File not loaded.
+5=Linking failed.
+6=Cannot create file
+7=Invalid object file format.
+8=Linking complete:
+9=Cannot open object file
+10=Cannot create symbol file
+11=chmod failed
+12=Code signing failed

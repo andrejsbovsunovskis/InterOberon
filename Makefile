@@ -12,7 +12,9 @@ run: all
 	@echo ----------------- object file -----------------
 	@hexutf Example.obj
 	@echo ----------------- executable ------------------
-	@hexutf Example
+	@hexutf Example|head -n 40
+	@echo "          ~~~"
+	@hexutf Example|head -n 518|tail -n 6
 
 clean:
 	rm -rf _Build InterOberon

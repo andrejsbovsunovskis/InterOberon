@@ -53,7 +53,7 @@ VAR
 
   (** Loaded strings **)
   errors: ARRAY 128, 80 OF CHAR; (** error code < 128, error length < 80 *)
-  risc: ARRAY 20, 80 OF CHAR; (** 20 RISC messages, length < 80 *)
+  compiler: ARRAY 13, 80 OF CHAR; (** 13 compiler messages, length < 80 *)
   kw: ARRAY 32 OF Pair; (** 32 keywords like BEGIN *)
   uni: ARRAY 5 OF Pair; (** 5 universe objects like INTEGER *)
   mods: ARRAY 2 OF Module; (** 2 modules like Out *)
@@ -225,7 +225,7 @@ BEGIN
     GetSym;
     IF sym = string THEN
       IF sval = 'errors' THEN GetSym; CheckRbrak; ReadIntSection(errors)
-      ELSIF sval = 'risc' THEN GetSym; CheckRbrak; ReadIntSection(risc)
+      ELSIF sval = 'compiler' THEN GetSym; CheckRbrak; ReadIntSection(compiler)
       ELSIF sval = 'keywords' THEN GetSym; CheckRbrak; ReadStrSection(kw)
       ELSIF sval = 'universe' THEN GetSym; CheckRbrak; ReadStrSection(uni)
       ELSE ReadModuleSection
@@ -323,9 +323,9 @@ PROCEDURE GetErrorText*(n: INTEGER; VAR s: ARRAY OF CHAR);
 BEGIN Strings.Copy(errors[n], s)
 END GetErrorText;
 
-PROCEDURE GetRiscText*(n: INTEGER; VAR s: ARRAY OF CHAR);
-BEGIN Strings.Copy(risc[n], s)
-END GetRiscText;
+PROCEDURE GetCompilerText*(n: INTEGER; VAR s: ARRAY OF CHAR);
+BEGIN Strings.Copy(compiler[n], s)
+END GetCompilerText;
 
 BEGIN
   error := TRUE
