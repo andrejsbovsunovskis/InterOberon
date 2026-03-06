@@ -602,7 +602,8 @@ BEGIN
           GetModName(nameStr);
           IF nameStr # S.id THEN S.Mark(E.modNameMismatch) END;
           S.Get(sym);
-          IF sym = S.period THEN S.Get(sym) ELSE S.Mark(E.expPeriod) END
+          IF sym = S.period THEN S.Get(sym) ELSE S.Mark(E.expPeriod) END;
+          Emitter.Exit
         ELSE S.Mark(E.expIdent)
         END
       ELSE S.Mark(E.expEnd)

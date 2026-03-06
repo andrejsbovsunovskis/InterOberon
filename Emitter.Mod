@@ -9,6 +9,8 @@ CONST
   Reg*  = 10;
   Cond* = 12; (** Condition expression result *)
 
+  SP = G.SP;
+
 TYPE
   (** Item is a temporary object that exists during statement parsing.
         |  mode |     a     |     b     |      r      |
@@ -403,34 +405,40 @@ BEGIN
   (* x.a is a fake call number, not an offset *)
   IF x.a = 6 (* Out.Int *) THEN
     (* Simple version: outputs value as a single byte (character) *)
-    (* On entry: R0 = i, R1 = n (ignored) *)
-    G.SubImmSP(16);          (* sp := sp - 16 *)
-    G.Strb(0, 31, 0);       (* STRB w0, [sp, #0] — write i as raw byte *)
+    (* On entry: w0 = i, w1 = n (ignored) *)
+    G.SubImm(SP, SP, 16);    (* sp := sp - 16 *)
+    G.StrbImm(0, SP, 0);     (* STRB w0, [sp, #0] — write i as raw byte *)
     G.MovImm(0, 1);          (* x0 = 1 (stdout) *)
-    G.MovReg(1, 31);         (* x1 = sp (address of byte) *)
+    G.MovReg(1, SP);         (* x1 = sp (address of byte) *)
     G.MovImm(2, 1);          (* x2 = 1 (length) *)
     G.MovImm(16, 4);         (* x16 = write syscall (Darwin) *)
     G.Svc(0);
-    G.AddImmSP(16)           (* sp := sp + 16 *)
+    G.AddImm(SP, SP, 16)     (* sp := sp + 16 *)
   ELSIF x.a = 7 (* Out.Ln *) THEN
-
-
     (* sp must stay 16-byte aligned -> reserve 16 bytes *)
-    G.SubImmSP(16);          (* sp := sp - 16 *)
+    G.SubImm(SP, SP, 16);    (* sp := sp - 16 *)
 
     G.MovImm(3, 0AH);        (* w3 = 0x0A *)
-    G.Strb(3, 31, 0);        (* STRB w3, [sp,#0]   (31 = SP as base in encoding helpers) *)
+    G.StrbImm(3, SP, 0);     (* STRB w3, [sp,#0]   (31 = SP as base in encoding helpers) *)
 
     G.MovImm(0, 1);          (* x0 = 1 (stdout) *)
-    G.MovReg(1, 31);         (* x1 = sp (address of byte) *)
+    G.MovReg(1, SP);         (* x1 = sp (address of byte) *)
     G.MovImm(2, 1);          (* x2 = 1 (len) *)
 
     G.MovImm(16, 4);         (* x16 = write syscall number (Darwin) *)
-    G.Svc(0);              (* typically svc #0x80 on macOS; if your G.Svc(0) works, keep it *)
+    G.Svc(0);                (* typically svc #0x80 on macOS; if your G.Svc(0) works, keep it *)
 
-    G.AddImmSP(16)           (* sp := sp + 16 *)
+    G.AddImm(SP, SP, 16)     (* sp := sp + 16 *)
   END;
   RH := 0 (* Do it only if x is a proper procedure *)
 END Call;
+
+(** - **)
+
+(** Generates code that terminates the program. *)
+PROCEDURE Exit*;
+BEGIN
+  G.Exit
+END Exit;
 
 END Emitter.

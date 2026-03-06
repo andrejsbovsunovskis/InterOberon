@@ -7,6 +7,9 @@ CONST
   (** Machine code file mark (first 4 bytes of .obj file) *)
   fileMark = ORD('A') + 256 * (ORD('R') + 256 * (ORD('M') + 256 * version));
 
+  (** Special registers **)
+  SP* = 31; (** Stack pointer register *)
+
 VAR
   outFile: Files.File; (** Output file *)
   outR: Files.Rider;
@@ -90,14 +93,25 @@ BEGIN
   DWord(n)
 END Adrp;
 
-(** MOV x{r1}, x{r2}, #{imm} *)
+(** ADD x{r1}, x{r2}, #{imm} *)
 PROCEDURE AddImm*(r1, r2, imm: INTEGER);
 VAR n: INTEGER;
 BEGIN
-  n := ((22H * 2000H + imm MOD 1000H) * 20H + r2) * 20H + r1;
+  ASSERT(imm MOD 1000H = imm);
+  n := ((22H * 2000H + imm) * 20H + r2) * 20H + r1;
   n := -7FFFFFFFH - 1 + n; (* Set highest bit for sf=64bit *)
   DWord(n)
 END AddImm;
+
+(** SUB x{r1}, x{r2}, #{imm} *)
+PROCEDURE SubImm*(r1, r2, imm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  ASSERT(imm MOD 1000H = imm);
+  n := ((0A2H * 2000H + imm) * 20H + r2) * 20H + r1;
+  n := -7FFFFFFFH - 1 + n; (* Set highest bit for sf=64bit *)
+  DWord(n)
+END SubImm;
 
 (** STR w{r1}, [x{r2}] *)
 PROCEDURE StrH*(r1, r2: INTEGER);
@@ -120,31 +134,13 @@ BEGIN
   DWord(n)
 END Svc;
 
-(** SUB SP, SP, #{imm} *)
-PROCEDURE SubImmSP*(imm: INTEGER);
-VAR n: INTEGER;
-BEGIN
-  n := 51000000H + imm * 400H + 3FFH;
-  n := -7FFFFFFFH - 1 + n;
-  DWord(n)
-END SubImmSP;
-
-(** ADD SP, SP, #{imm} *)
-PROCEDURE AddImmSP*(imm: INTEGER);
-VAR n: INTEGER;
-BEGIN
-  n := 11000000H + imm * 400H + 3FFH;
-  n := -7FFFFFFFH - 1 + n;
-  DWord(n)
-END AddImmSP;
-
 (** STRB w{rt}, [x{rn}, #{imm}] *)
-PROCEDURE Strb*(rt, rn, imm: INTEGER);
+PROCEDURE StrbImm*(rt, rn, imm: INTEGER);
 VAR n: INTEGER;
 BEGIN
   n := 39000000H + imm * 400H + rn * 20H + rt;
   DWord(n)
-END Strb;
+END StrbImm;
 
 (** MOV x{rd}, x{rn}  —  encoded as ADD x{rd}, x{rn}, #0 *)
 PROCEDURE MovReg*(rd, rn: INTEGER);

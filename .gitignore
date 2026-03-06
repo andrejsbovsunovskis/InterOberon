@@ -1,8 +1,10 @@
 /_Build
 /InterOberon
-/Factorize
 *.swp
 *.obj
 *.sym
 *.hex
 .DS_Store
+
+/Factorize
+/Example

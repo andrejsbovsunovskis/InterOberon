@@ -15,6 +15,8 @@ run: all
 	@hexutf Example|head -n 40
 	@echo "          ~~~"
 	@hexutf Example|head -n 518|tail -n 6
+	@echo -------------------- RUN  ---------------------
+	@./Example | hexdump -C
 
 clean:
 	rm -rf _Build InterOberon
