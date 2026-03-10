@@ -2,7 +2,7 @@ MODULE Emitter;
 IMPORT ST := SymTable, S := Scanner, G := Generator, E := ErrorMsg, Files, Strings, M := Machine;
 
 CONST
-  maxGenReg = 13; (** Max number of general-purpose registers (R0..R12, R13=MP) *)
+  maxGenReg = 28; (** Max number of general-purpose registers (x0..x28) *)
 
   (** Values of Item.mode **)
   (** Some of Object Classes from SymTable are also valid *)
@@ -63,11 +63,10 @@ VAR op, q, addr: INTEGER;
 BEGIN
   IF x.mode # Reg THEN
     IF x.mode = ST.Const THEN
-      (*Put1(Mov, RH, 0, x.a)*)
+      G.MovImm(RH, x.a)
     ELSIF x.mode = ST.Var THEN
-      (*!TODO LOAD instruction, addr = x.a *)
-      (*!TODO take account of x.type.size: 1 for boolean, 2 for char or 4 for integer *)
-      (*Put2(op, RH, MP, q, addr);*)
+      G.Adrp(RH, 2); (* ADRP RH, 2 *)
+      G.LdrImm(RH, RH, x.a, x.type.size); (* LDR* {RH}, [x{RH}, #{x.a}] *)
       cmpNeeded := TRUE
     END;
     x.mode := Reg;
@@ -265,7 +264,7 @@ BEGIN
 END IntRel;
 
 PROCEDURE Assign*(VAR x, y: Item);
-VAR op, q: INTEGER;
+VAR size, q: INTEGER;
 BEGIN
   IF ~ST.TypesCompatible(x.type, y.type) THEN
     S.Mark(E.incompatible)
@@ -273,12 +272,8 @@ BEGIN
     S.Mark(E.assignConst(*?*))
   ELSE (* x -- Var, y -- Const, Var or Reg *)
     Load(y); (* x -- Var, y -- Reg *)
-    (*op := Str;*)
-    q := 0;
-    IF    x.type.size = 1 THEN INC(op) (* BOOLEAN *)
-    ELSIF x.type.size = 2 THEN INC(op); q := 1  (* CHAR *)
-    END;
-    (*Put2(op, y.r, MP, q, x.a);*)
+    G.Adrp(RH, 2); (* ADRP RH, 2 *)
+    G.StrImm(y.r, RH, x.a, x.type.size); (* STR* w{y.r}, [x{RH}, #{x.a}] *)
     DEC(RH)
   END
 END Assign;
@@ -407,26 +402,26 @@ BEGIN
     (* Simple version: outputs value as a single byte (character) *)
     (* On entry: w0 = i, w1 = n (ignored) *)
     G.SubImm(SP, SP, 16);    (* sp := sp - 16 *)
-    G.StrbImm(0, SP, 0);     (* STRB w0, [sp, #0] — write i as raw byte *)
-    G.MovImm(0, 1);          (* x0 = 1 (stdout) *)
-    G.MovReg(1, SP);         (* x1 = sp (address of byte) *)
-    G.MovImm(2, 1);          (* x2 = 1 (length) *)
-    G.MovImm(16, 4);         (* x16 = write syscall (Darwin) *)
+    G.StrImm(0, SP, 0, 1);   (* STRB w0, [sp, #0] — write i as raw byte *)
+    G.MovImm(0, 1);          (* x0 := 1 (stdout) *)
+    G.MovReg(1, SP);         (* x1 := sp (address of byte) *)
+    G.MovImm(2, 1);          (* x2 := 1 (length) *)
+    G.MovImm(16, 4);         (* x16 := write syscall *)
     G.Svc(0);
     G.AddImm(SP, SP, 16)     (* sp := sp + 16 *)
   ELSIF x.a = 7 (* Out.Ln *) THEN
     (* sp must stay 16-byte aligned -> reserve 16 bytes *)
     G.SubImm(SP, SP, 16);    (* sp := sp - 16 *)
 
-    G.MovImm(3, 0AH);        (* w3 = 0x0A *)
-    G.StrbImm(3, SP, 0);     (* STRB w3, [sp,#0]   (31 = SP as base in encoding helpers) *)
+    G.MovImm(3, 0AH);        (* w3 := 0x0A *)
+    G.StrImm(3, SP, 0, 1);   (* STRB w3, [sp,#0] *)
 
-    G.MovImm(0, 1);          (* x0 = 1 (stdout) *)
-    G.MovReg(1, SP);         (* x1 = sp (address of byte) *)
-    G.MovImm(2, 1);          (* x2 = 1 (len) *)
+    G.MovImm(0, 1);          (* x0 := 1 (stdout) *)
+    G.MovReg(1, SP);         (* x1 := sp (address of byte) *)
+    G.MovImm(2, 1);          (* x2 := 1 (length) *)
 
-    G.MovImm(16, 4);         (* x16 = write syscall number (Darwin) *)
-    G.Svc(0);                (* typically svc #0x80 on macOS; if your G.Svc(0) works, keep it *)
+    G.MovImm(16, 4);         (* x16 := write syscall number *)
+    G.Svc(0);
 
     G.AddImm(SP, SP, 16)     (* sp := sp + 16 *)
   END;

@@ -4,7 +4,9 @@ VAR
   a, b: INTEGER;
 BEGIN
   a := 43;
-  b := 4096 + 65;
+  b := 4096 + 65+25;
+  Out.Int(b, 0);
+  Out.Int(b, 0);
   Out.Int(b, 0);
   Out.Ln
 END Example.

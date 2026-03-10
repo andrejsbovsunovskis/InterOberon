@@ -56,6 +56,16 @@ BEGIN
   END
 END String;
 
+(** Returns log2(size) for encoding purposes. *)
+PROCEDURE SizeToLog(size: INTEGER): INTEGER;
+BEGIN
+  IF    size = 1 THEN size := 0 (* BOOLEAN *)
+  ELSIF size = 2 THEN size := 1 (* CHAR *)
+  ELSIF size = 4 THEN size := 2 (* INTEGER *)
+  ELSE ASSERT(FALSE) (*!FIXME*)
+  END
+RETURN size END SizeToLog;
+
 (** Generates code that terminates the program. *)
 PROCEDURE Exit*;
 BEGIN
@@ -73,7 +83,7 @@ BEGIN
   DWord(n)
 END MovImm;
 
-(** MOV w{r}, #{imm} *)
+(** MOV w{r}, #{imm} !FIXME unused, is it 16 bit or 32 bit? !TODO rename*)
 PROCEDURE MovHImm*(r, imm: INTEGER);
 VAR n: INTEGER;
 BEGIN
@@ -134,13 +144,35 @@ BEGIN
   DWord(n)
 END Svc;
 
-(** STRB w{rt}, [x{rn}, #{imm}] *)
-PROCEDURE StrbImm*(rt, rn, imm: INTEGER);
+(** STR* {rt}, [x{rn}, #{imm}]
+     size must be 0..3 (1, 2, 4 or 8 bytes). *)
+PROCEDURE StrImm*(rt, rn, imm, size: INTEGER);
 VAR n: INTEGER;
 BEGIN
-  n := 39000000H + imm * 400H + rn * 20H + rt;
+  size := SizeToLog(size);
+  ASSERT(LSL(ASR(imm, size), size) = imm); (* No bits will be left out *)
+
+  imm := ASR(imm, size);
+  ASSERT(imm MOD 1000H = imm);
+
+  n := (size * 40H + 39H) * 1000000H + imm * 400H + rn * 20H + rt;
   DWord(n)
-END StrbImm;
+END StrImm;
+
+(** LDR* {rt}, [x{rn}, #{imm}]
+     size must be 0..3 (1, 2, 4 or 8 bytes). *)
+PROCEDURE LdrImm*(rt, rn, imm, size: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  size := SizeToLog(size);
+  ASSERT(LSL(ASR(imm, size), size) = imm); (* No bits will be left out *)
+
+  imm := ASR(imm, size);
+  ASSERT(imm MOD 1000H = imm);
+
+  n := (size * 40H + 39H) * 1000000H + 400000H + imm * 400H + rn * 20H + rt;
+  DWord(n)
+END LdrImm;
 
 (** MOV x{rd}, x{rn}  —  encoded as ADD x{rd}, x{rn}, #0 *)
 PROCEDURE MovReg*(rd, rn: INTEGER);
