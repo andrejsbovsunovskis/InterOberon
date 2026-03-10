@@ -306,25 +306,28 @@ END Assign;
 (** Jumps *)
 
 PROCEDURE NextL(VAR L: INTEGER);
-VAR tmp: Files.Rider;
-  b: BYTE;
+VAR instr, imm19: INTEGER;
 BEGIN
-  (*
-  Files.Set(tmp, F, L * 4 + codeStart + 1);
-  Files.Read(tmp, b); L := b;
-  Files.Read(tmp, b); L := L * 100H + b;
-  Files.Read(tmp, b); L := L * 100H + b
-  *)
+  (* L = byte offset of a B.cond whose imm19 encodes byte offset of prev element *)
+  instr := G.ReadWord(L);
+  imm19 := (instr DIV 20H) MOD 80000H;
+  IF imm19 >= 40000H THEN DEC(imm19, 80000H) END; (* sign-extend 19 bits *)
+  L := imm19 * 4
 END NextL;
 
-PROCEDURE FixLink*(L: INTEGER);
+PROCEDURE FixLinkWith(L, target: INTEGER);
 VAR prevL: INTEGER;
 BEGIN
   WHILE L # 0 DO
     prevL := L;
     NextL(L);
-    (*PutOffset(prevL, pc - prevL - 1)*)
+    G.PatchBCond(prevL, target)
   END
+END FixLinkWith;
+
+PROCEDURE FixLink*(L: INTEGER);
+BEGIN
+  FixLinkWith(L, G.Here())
 END FixLink;
 
 PROCEDURE Fixup*(VAR x: Item);
@@ -334,38 +337,48 @@ END Fixup;
 PROCEDURE CFJump*(VAR x: Item);
 BEGIN
   LoadCond(x);
-  (*Put3(BC, Negated(x.r), x.a);*)
+  (* Emit B.cond(Negated(x.r)), chain x.a false-list; fix x.b true-list to here *)
   FixLink(x.b);
   x.b := 0; (* Required because of And1 *)
-  (*x.a := pc - 1*)
+  x.a := G.BCond(Negated(x.r), x.a)
 END CFJump;
 
 PROCEDURE FJump*(VAR L: INTEGER);
 BEGIN
-  (*Put3(BC, AL, L);*)
-  (*L := pc - 1*)
+  (* Emit B.cond(AL) — always taken; chain previous L *)
+  L := G.BCond(14 (* AL *), L)
 END FJump;
 
 PROCEDURE BJump*(L: INTEGER);
 BEGIN
-  (*Put3(BC, AL, L - pc - 1);*)
+  G.B((L - G.Here()) DIV 4)
 END BJump;
 
 PROCEDURE CBJump*(VAR x: Item; L: INTEGER);
+VAR here: INTEGER;
 BEGIN
   LoadCond(x);
-  (*Put3(BC, Negated(x.r), L - pc - 1);*)
-  FixLink(x.b); (*FixLinkWith(x.a, L)*)
+  here := G.Here();
+  (* Emit B.cond(Negated(x.r)) backward to L — loop while condition FALSE *)
+  G.BCondReal(Negated(x.r), (L - here) DIV 4);
+  (* x.b = true-list: condition TRUE elsewhere → exit → land after this instr *)
+  FixLink(x.b);
+  (* x.a = false-list: condition FALSE elsewhere → also loop back to L *)
+  FixLinkWith(x.a, L)
 END CBJump;
 
 PROCEDURE MergeLists(L1, L2: INTEGER): INTEGER;
-VAR L, prevL: INTEGER;
+VAR L, prevL, instr, cond: INTEGER;
 BEGIN
   IF L1 = 0 THEN L1 := L2
   ELSIF L2 # 0 THEN
+    (* Walk to tail of L1 (element with imm19 = 0) *)
     L := L1;
     REPEAT prevL := L; NextL(L) UNTIL L = 0;
-    (*PutOffset(prevL, L2)*)
+    (* Splice: make tail of L1 point to head of L2 *)
+    instr := G.ReadWord(prevL);
+    cond  := instr MOD 10H;
+    G.WriteWord(prevL, 54000000H + (L2 DIV 4 MOD 80000H) * 20H + cond)
   END
 RETURN L1 END MergeLists;
 
@@ -388,9 +401,10 @@ END And2;
 PROCEDURE Or1*(VAR x: Item);
 BEGIN
   LoadCond(x);
-  (*Put3(BC, x.r, x.b);*)
-  FixLink(x.a); x.a := 0;
-  (*x.b := pc - 1*)
+  (* Emit B.cond(x.r): if TRUE jump forward → true-list; chain x.b *)
+  FixLink(x.a);
+  x.a := 0;
+  x.b := G.BCond(x.r, x.b)
 END Or1;
 
 (** x := x OR y *)

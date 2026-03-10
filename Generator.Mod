@@ -62,7 +62,8 @@ BEGIN
   IF    size = 1 THEN size := 0 (* BOOLEAN *)
   ELSIF size = 2 THEN size := 1 (* CHAR *)
   ELSIF size = 4 THEN size := 2 (* INTEGER *)
-  ELSE ASSERT(FALSE) (*!FIXME*)
+  ELSIF size = 8 THEN size := 3 (* LONGINT / pointer *)
+  ELSE ASSERT(FALSE)
   END
 RETURN size END SizeToLog;
 
@@ -255,6 +256,67 @@ BEGIN
   n := -7FFFFFFFH - 1 + n; (* Set highest bit *)
   DWord(n)
 END Mov;
+
+(** Random-access read of a 4-byte instruction from codeFile. *)
+PROCEDURE ReadWord*(pos: INTEGER): INTEGER;
+VAR r: Files.Rider;
+  b0, b1, b2, b3: BYTE;
+BEGIN
+  Files.Set(r, codeFile, pos);
+  Files.Read(r, b0); Files.Read(r, b1);
+  Files.Read(r, b2); Files.Read(r, b3);
+  RETURN b0 + b1 * 100H + b2 * 10000H + b3 * 1000000H
+END ReadWord;
+
+(** Random-access write of a 4-byte instruction to codeFile. *)
+PROCEDURE WriteWord*(pos, instr: INTEGER);
+VAR r: Files.Rider;
+BEGIN
+  Files.Set(r, codeFile, pos);
+  Files.Write(r, instr MOD 100H);
+  Files.Write(r, instr DIV 100H  MOD 100H);
+  Files.Write(r, instr DIV 10000H  MOD 100H);
+  Files.Write(r, instr DIV 1000000H MOD 100H)
+END WriteWord;
+
+(** Emit B.cond as a linked-list node.
+    cond     = ARM64 condition code (0..15).
+    listPrev = byte offset of previous list head (0 = none), stored as imm19.
+    Returns byte offset of this instruction (use as new list head). *)
+PROCEDURE BCond*(cond, listPrev: INTEGER): INTEGER;
+VAR here, n: INTEGER;
+BEGIN
+  here := Files.Pos(codeR);
+  n := 54000000H + (listPrev DIV 4 MOD 80000H) * 20H + cond;
+  DWord(n);
+  RETURN here
+END BCond;
+
+(** Emit B.cond with a real signed instruction-word offset (for CBJump). *)
+PROCEDURE BCondReal*(cond, offset: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 54000000H + (offset MOD 80000H) * 20H + cond;
+  DWord(n)
+END BCondReal;
+
+(** Emit unconditional B with a real signed instruction-word offset. *)
+PROCEDURE B*(offset: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 14000000H + (offset MOD 4000000H);
+  DWord(n)
+END B;
+
+(** Backpatch B.cond at pos: rewrite imm19 with (target-pos)/4, preserve cond. *)
+PROCEDURE PatchBCond*(pos, target: INTEGER);
+VAR instr, cond, imm19: INTEGER;
+BEGIN
+  instr := ReadWord(pos);
+  cond  := instr MOD 10H;
+  imm19 := (target - pos) DIV 4;
+  WriteWord(pos, 54000000H + (imm19 MOD 80000H) * 20H + cond)
+END PatchBCond;
 
 PROCEDURE Here*(): INTEGER;
 RETURN Files.Pos(codeR) END Here;
