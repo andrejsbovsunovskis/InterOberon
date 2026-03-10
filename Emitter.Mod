@@ -11,6 +11,16 @@ CONST
 
   SP = G.SP;
 
+  (** ARM64 condition codes *)
+  EQ = 0;  (** Equal          *)
+  NE = 1;  (** Not equal      *)
+  GE = 10; (** Signed >=      *)
+  LT = 11; (** Signed <       *)
+  GT = 12; (** Signed >       *)
+  LE = 13; (** Signed <=      *)
+  AL = 14; (** Always (true)  *)
+  NV = 15; (** Never  (false) *)
+
 TYPE
   (** Item is a temporary object that exists during statement parsing.
         |  mode |     a     |     b     |      r      |
@@ -91,12 +101,10 @@ BEGIN
   IF x.mode # Cond THEN
     IF x.type.form = ST.Bool THEN
       IF x.mode = ST.Const THEN
-        (*x.r := NV - x.a * (NV - AL)*)
+        IF x.a = 0 THEN x.r := NV ELSE x.r := AL END
       ELSE Load(x);
-        IF cmpNeeded THEN
-          (*Put1(Cmp, x.r, x.r, 0)*)
-        END;
-        (*x.r := NE;*)
+        G.CmpImm(x.r, 0);
+        x.r := NE;
         DEC(RH)
       END
     ELSE S.Mark(E.expBool)
@@ -127,8 +135,7 @@ BEGIN
     END
   ELSE (* x -- Var or Reg *)
     Load(x);
-    (*Put1(Mov, RH, 0, 0);*)
-    (*Put0(Sub, x.r, RH, x.r)*)
+    G.Neg(x.r, x.r)
   END
 END Neg;
 
@@ -152,21 +159,21 @@ BEGIN
   ELSIF y.mode = ST.Const THEN (* x -- Reg or Var *)
     Load(x); (* x -- Reg, y -- Const *)
     IF op = S.plus THEN
-      (*Put1(Add, x.r, x.r, y.a)*)
+      G.AddImm(x.r, x.r, y.a)
     ELSE (* op = S.minus *)
-      (*Put1(Sub, x.r, x.r, y.a)*)
+      G.SubImm(x.r, x.r, y.a)
     END
   ELSIF x.mode = ST.Const THEN (* y -- Reg or Var *)
     Load(y); (* x -- Const, y -- Reg *)
     IF op = S.minus THEN Neg(y) END;
-    (*Put1(Add, y.r, y.r, x.a)*);
+    G.AddImm(y.r, y.r, x.a);
     x := y
   ELSE
     Load(x); Load(y); (* x -- Reg, y -- Reg *)
     IF op = S.plus THEN
-      (*Put0(Add, x.r, x.r, y.r)*)
+      G.Add(x.r, x.r, y.r)
     ELSE (* op = S.minus *)
-      (*Put0(Sub, x.r, x.r, y.r)*)
+      G.Sub(x.r, x.r, y.r)
     END;
     DEC(RH)
   END
@@ -174,8 +181,22 @@ END AddOp;
 
 PROCEDURE Negated(code: INTEGER): INTEGER;
 BEGIN
-  IF code < 8 THEN INC(code, 8) ELSE DEC(code, 8) END
+  (* ARM64 condition pairs differ only in bit 0 *)
+  IF ODD(code) THEN DEC(code) ELSE INC(code) END
 RETURN code END Negated;
+
+(** Maps a relational operator token to the ARM64 condition code *)
+PROCEDURE RelCond(op: INTEGER): INTEGER;
+VAR code: INTEGER;
+BEGIN
+  IF    op = S.eql THEN code := EQ
+  ELSIF op = S.neq THEN code := NE
+  ELSIF op = S.lss THEN code := LT
+  ELSIF op = S.leq THEN code := LE
+  ELSIF op = S.gtr THEN code := GT
+  ELSE                   code := GE
+  END
+RETURN code END RelCond;
 
 PROCEDURE Not*(VAR x: Item);
 VAR t: INTEGER;
@@ -203,27 +224,31 @@ BEGIN
       END
     END
   ELSIF y.mode = ST.Const THEN (* x -- Reg or Var *)
-    Load(x); (* x -- Reg, y -- Const *)
+    Load(x); (* x -- Reg; use RH as scratch for constant *)
     IF op = S.times THEN
-      (*Put1(Mul, x.r, x.r, y.a)*)
+      G.MovImm(RH, y.a);
+      G.Mul(x.r, x.r, RH)
     ELSIF y.a <= 0 THEN S.Mark(E.badDiv)
     ELSIF op = S.div THEN
-      (*Put1(Div, x.r, x.r, y.a)*)
-    ELSE (* op = S.mod *)
-      (*Put1(Div, x.r, x.r, y.a);*)
-      (*Put0(Mov + U, x.r, 0, 0)*) (* R[x.r] := H *)
+      G.MovImm(RH, y.a);
+      G.Div(x.r, x.r, RH)
+    ELSE (* op = S.mod: RH = divisor, RH+1 = quotient *)
+      G.MovImm(RH, y.a);
+      G.Div(RH + 1, x.r, RH);
+      G.Msub(x.r, RH + 1, RH, x.r)
     END
   ELSIF x.mode = ST.Const THEN (* y -- Reg or Var *)
     Load(y); (* x -- Const, y -- Reg *)
     IF op = S.times THEN
-      (*Put1(Mul, y.r, y.r, x.a)*)
+      G.MovImm(RH, x.a);
+      G.Mul(y.r, y.r, RH)
     ELSE
       Load(x); (* x -- Reg, y -- Reg, y.r < x.r *)
       IF op = S.div THEN
-        (*Put1(Div, y.r, x.r, y.r)*)
-      ELSE (* op = S.mod *)
-        (*Put1(Div, y.r, x.r, y.r);*)
-        (*Put0(Mov + U, y.r, 0, 0)*) (* R[y.r] := H *)
+        G.Div(y.r, x.r, y.r)
+      ELSE (* op = S.mod: RH = quotient scratch *)
+        G.Div(RH, x.r, y.r);
+        G.Msub(y.r, RH, y.r, x.r)
       END;
       DEC(RH)
     END;
@@ -231,12 +256,12 @@ BEGIN
   ELSE
     Load(x); Load(y); (* x -- Reg, y -- Reg *)
     IF op = S.times THEN
-      (*Put0(Mul, x.r, x.r, y.r)*)
+      G.Mul(x.r, x.r, y.r)
     ELSIF op = S.div THEN
-      (*Put0(Div, x.r, x.r, y.r)*)
-    ELSE (* op = S.mod *)
-      (*Put0(Div, x.r, x.r, y.r);*)
-      (*Put0(Mov + U, x.r, 0, 0)*) (* R[x.r] := H *)
+      G.Div(x.r, x.r, y.r)
+    ELSE (* op = S.mod: RH = quotient scratch *)
+      G.Div(RH, x.r, y.r);
+      G.Msub(x.r, RH, y.r, x.r)
     END;
     DEC(RH)
   END
@@ -252,15 +277,15 @@ PROCEDURE IntRel*(op: INTEGER; VAR x, y: Item);
 BEGIN
   IF y.mode = ST.Const THEN
     Load(x);
-    (*Put1(Sub, x.r, x.r, y.a);*)
+    G.CmpImm(x.r, y.a);
     DEC(RH)
   ELSE
     Load(x);
     Load(y);
-    (*Put0(Sub, x.r, x.r, y.r);*)
+    G.Cmp(x.r, y.r);
     DEC(RH, 2)
   END;
-  (*SetCond(x, relmap[op - S.eql])*)
+  SetCond(x, RelCond(op))
 END IntRel;
 
 PROCEDURE Assign*(VAR x, y: Item);
@@ -398,13 +423,23 @@ END PrepCall;
 PROCEDURE Call*(VAR x: Item; rx: INTEGER);
 BEGIN
   (* x.a is a fake call number, not an offset *)
-  IF x.a = 6 (* Out.Int *) THEN
+  IF x.a = 5 (* Out.Char *) THEN
+    (* On entry: w0 = c (CHAR value) *)
+    G.SubImm(SP, SP, 16);    (* sp := sp - 16 *)
+    G.StrImm(0, SP, 0, 1);   (* STRB w0, [sp, #0] *)
+    G.MovImm(0, 1);          (* x0 := 1 (stdout) *)
+    G.Mov(1, SP);            (* x1 := sp *)
+    G.MovImm(2, 1);          (* x2 := 1 (length) *)
+    G.MovImm(16, 4);         (* x16 := write syscall *)
+    G.Svc(0);
+    G.AddImm(SP, SP, 16)     (* sp := sp + 16 *)
+  ELSIF x.a = 6 (* Out.Int *) THEN
     (* Simple version: outputs value as a single byte (character) *)
     (* On entry: w0 = i, w1 = n (ignored) *)
     G.SubImm(SP, SP, 16);    (* sp := sp - 16 *)
     G.StrImm(0, SP, 0, 1);   (* STRB w0, [sp, #0] — write i as raw byte *)
     G.MovImm(0, 1);          (* x0 := 1 (stdout) *)
-    G.MovReg(1, SP);         (* x1 := sp (address of byte) *)
+    G.Mov(1, SP);            (* x1 := sp (address of byte) *)
     G.MovImm(2, 1);          (* x2 := 1 (length) *)
     G.MovImm(16, 4);         (* x16 := write syscall *)
     G.Svc(0);
@@ -417,7 +452,7 @@ BEGIN
     G.StrImm(3, SP, 0, 1);   (* STRB w3, [sp,#0] *)
 
     G.MovImm(0, 1);          (* x0 := 1 (stdout) *)
-    G.MovReg(1, SP);         (* x1 := sp (address of byte) *)
+    G.Mov(1, SP);            (* x1 := sp (address of byte) *)
     G.MovImm(2, 1);          (* x2 := 1 (length) *)
 
     G.MovImm(16, 4);         (* x16 := write syscall number *)

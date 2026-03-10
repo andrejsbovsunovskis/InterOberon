@@ -174,14 +174,87 @@ BEGIN
   DWord(n)
 END LdrImm;
 
-(** MOV x{rd}, x{rn}  —  encoded as ADD x{rd}, x{rn}, #0 *)
-PROCEDURE MovReg*(rd, rn: INTEGER);
+(** ADD x{rd}, x{rn}, x{rm} *)
+PROCEDURE Add*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 0BH * 1000000H + rm * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* Set highest bit for sf=64bit *)
+  DWord(n)
+END Add;
+
+(** SUB x{rd}, x{rn}, x{rm} *)
+PROCEDURE Sub*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 4BH * 1000000H + rm * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* Set highest bit for sf=64bit *)
+  DWord(n)
+END Sub;
+
+(** NEG x{rd}, x{rm} - encoded as SUB x{rd}, xzr, x{rm} *)
+PROCEDURE Neg*(rd, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 4BH * 1000000H + rm * 10000H + 1FH * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* Set highest bit → 0xCB000000 *)
+  DWord(n)
+END Neg;
+
+(** MUL x{rd}, x{rn}, x{rm} - encoded as MADD x{rd}, x{rn}, x{rm}, xzr *)
+PROCEDURE Mul*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 1BH * 1000000H + rm * 10000H + 1FH * 400H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* Set highest bit → 0x9B000000 *)
+  DWord(n)
+END Mul;
+
+(** SDIV x{rd}, x{rn}, x{rm} *)
+PROCEDURE Div*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 1AC00C00H + rm * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* Set highest bit → 0x9AC00C00 *)
+  DWord(n)
+END Div;
+
+(** MSUB x{rd}, x{rn}, x{rm}, x{ra} - rd := ra - rn * rm *)
+PROCEDURE Msub*(rd, rn, rm, ra: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 1B008000H + rm * 10000H + ra * 400H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* Set highest bit → 0x9B008000 *)
+  DWord(n)
+END Msub;
+
+(** CMP x{rn}, #{imm} - encoded as SUBS xzr, x{rn}, #{imm} *)
+PROCEDURE CmpImm*(rn, imm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  ASSERT(imm MOD 1000H = imm);
+  n := 71000000H + imm * 400H + rn * 20H + 1FH;
+  n := -7FFFFFFFH - 1 + n; (* Set highest bit → 0xF1000000 *)
+  DWord(n)
+END CmpImm;
+
+(** CMP x{rn}, x{rm} - encoded as SUBS xzr, x{rn}, x{rm} *)
+PROCEDURE Cmp*(rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 6BH * 1000000H + rm * 10000H + rn * 20H + 1FH;
+  n := -7FFFFFFFH - 1 + n; (* Set highest bit → 0xEB000000 *)
+  DWord(n)
+END Cmp;
+
+(** MOV x{rd}, x{rn} - encoded as ADD x{rd}, x{rn}, #0 *)
+PROCEDURE Mov*(rd, rn: INTEGER);
 VAR n: INTEGER;
 BEGIN
   n := 11000000H + rn * 20H + rd;
-  n := -7FFFFFFFH - 1 + n;
+  n := -7FFFFFFFH - 1 + n; (* Set highest bit *)
   DWord(n)
-END MovReg;
+END Mov;
 
 PROCEDURE Here*(): INTEGER;
 RETURN Files.Pos(codeR) END Here;

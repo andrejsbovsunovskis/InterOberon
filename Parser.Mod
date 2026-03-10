@@ -216,6 +216,7 @@ BEGIN
     IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END;
     IF func = 31 (*ORD*) THEN
       IF x.type.form = ST.Char THEN Emitter.Ord(x) END
+      (*!TODO ORD(BOOLEAN) -> INTEGER 0=FALSE, 1=TRUE*)
     ELSIF func = 32 (*CHR*) THEN
       IF x.type.form = ST.Int THEN Emitter.Ord(x) END
     ELSE ASSERT(FALSE)
