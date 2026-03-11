@@ -1,5 +1,6 @@
 /_Build
 /InterOberon
+/.vscode
 *.swp
 *.obj
 *.sym
