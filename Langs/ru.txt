@@ -24,6 +24,10 @@ INTEGER=ЦЕЛОЕ
 BOOLEAN=БУЛЕВ
 CHR=ЛИТ
 ORD=ОРД
+ABS=АБС
+ODD=НЕЧ
+INC=УВЕЛ
+DEC=УМЕН
 
 [Out]
 =Вывод

@@ -8,13 +8,14 @@ CONST
   Var*   = 2; (** Variables and value parameters *)
   Par*   = 3; (** Var-parameters *)
   Typ*   = 5;
+  SProc* = 6; (** Standard procedure *)
+  SFunc* = 7; (** Standard functional procedure *)
   Mod*   = 8;
 
   (** Type Forms **)
   Bool*  = 2;
   Char*  = 3;
   Int*   = 4;
-  SFunc* = 7;
   NoTyp* = 9;
   Proc*  = 10;
 
@@ -146,6 +147,34 @@ BEGIN
   U.class := SFunc;
   U.val := 32;
   U.type := charType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('ABS', s); SetName(U.names, s);
+  U.class := SFunc;
+  U.val := 33;
+  U.type := intType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('ODD', s); SetName(U.names, s);
+  U.class := SFunc;
+  U.val := 34;
+  U.type := boolType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('INC', s); SetName(U.names, s);
+  U.class := SProc;
+  U.val := 41;
+  U.type := noType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('DEC', s); SetName(U.names, s);
+  U.class := SProc;
+  U.val := 42;
+  U.type := noType;
 
   U.next := dummy
 END InitUniverse;

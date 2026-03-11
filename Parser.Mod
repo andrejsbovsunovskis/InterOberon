@@ -220,12 +220,37 @@ BEGIN
       END
     ELSIF func = 32 (*CHR*) THEN
       IF x.type.form = ST.Int THEN Emitter.Ord(x) END
+    ELSIF func = 33 (*ABS*) THEN
+      IF x.type.form = ST.Int THEN Emitter.AbsVal(x) END
+    ELSIF func = 34 (*ODD*) THEN
+      IF x.type.form = ST.Int THEN Emitter.OddVal(x) END
     ELSE ASSERT(FALSE)
     END;
     x.type := resType
   ELSE S.Mark(E.expLparen)
   END
 END StandFunc;
+
+(** StandProc = ident "(" expr ["," expr] ")". *)
+PROCEDURE StandProc(proc: INTEGER);
+VAR x, n: Emitter.Item;
+BEGIN
+  IF sym = S.lparen THEN
+    S.Get(sym);
+    Expr0(x);
+    IF sym = S.comma THEN
+      S.Get(sym);
+      Expr0(n)
+    ELSE
+      Emitter.MakeConstItem(n, ST.intType, 1)
+    END;
+    IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END;
+    IF proc = 41 (*INC*) THEN Emitter.IncDecVar(x, n, FALSE)
+    ELSIF proc = 42 (*DEC*) THEN Emitter.IncDecVar(x, n, TRUE)
+    END
+  ELSE S.Mark(E.expLparen)
+  END
+END StandProc;
 
 (** Param = Expr.
      par can be NIL *)
@@ -545,13 +570,17 @@ VAR obj: ST.Object;
 BEGIN
   IF sym = S.ident THEN
     QualIdent(obj);
-    Selector;
-    IF sym = S.eql THEN S.Mark(E.expBecomes); sym := S.becomes END;
-    IF sym = S.becomes THEN
-      S.Get(sym);
-      Assign(obj)
+    IF obj.class = ST.SProc THEN
+      StandProc(obj.val)
     ELSE
-      ProcedureCall(obj)
+      Selector;
+      IF sym = S.eql THEN S.Mark(E.expBecomes); sym := S.becomes END;
+      IF sym = S.becomes THEN
+        S.Get(sym);
+        Assign(obj)
+      ELSE
+        ProcedureCall(obj)
+      END
     END
   ELSIF sym = S.if THEN
     IfStatement

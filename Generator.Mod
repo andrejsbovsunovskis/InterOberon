@@ -75,13 +75,65 @@ BEGIN
   Word(00001H); Word(0D400H)
 END Exit;
 
-(** MOV x{r}, #{imm} *)
-PROCEDURE MovImm*(r, imm: INTEGER);
+(** MOVK x{r}, #{imm}, #{shift} *)
+PROCEDURE MovK*(r, imm, shift: INTEGER);
 VAR n: INTEGER;
 BEGIN
-  n := (294H * 10000H + imm MOD 10000H) * 20H + r;
-  n := -7FFFFFFFH - 1 + n; (* Set highest bit for 64-bit *)
+  ASSERT(imm MOD 10000H = imm);
+  ASSERT((shift = 0) OR (shift = 16) OR (shift = 32) OR (shift = 48));
+
+  n := (794H * 10000H + (shift DIV 16) * 200000H + imm) * 20H + r;
+  n := -7FFFFFFFH - 1 + n;
+
   DWord(n)
+END MovK;
+
+(** MOVZ x{r}, #{imm}, LSL #{shift} *)
+PROCEDURE MovZ*(r, imm, shift: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  ASSERT(imm MOD 10000H = imm);
+  ASSERT((shift = 0) OR (shift = 16) OR (shift = 32) OR (shift = 48));
+
+  n := (294H * 10000H + (shift DIV 16) * 200000H + imm) * 20H + r;
+  n := -7FFFFFFFH - 1 + n;
+
+  DWord(n)
+END MovZ;
+
+(** MOVN x{r}, #{imm}, LSL #{shift} *)
+PROCEDURE MovN*(r, imm, shift: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  ASSERT(imm MOD 10000H = imm);
+  ASSERT((shift = 0) OR (shift = 16) OR (shift = 32) OR (shift = 48));
+
+  (* 0x92800000 | (hw << 21) | (imm16 << 5) | Rd *)
+  n := 12800000H + (shift DIV 16) * 200000H + imm * 20H + r;
+  n := -7FFFFFFFH - 1 + n;
+
+  DWord(n)
+END MovN;
+
+(** MOV w{r}, #{imm}
+     Load arbitrary 32-bit immediate into W register. *)
+PROCEDURE MovImm*(r, imm: INTEGER);
+VAR w0, w1, zc, nc: INTEGER;
+BEGIN
+  w0 := imm MOD 10000H;
+  w1 := ASR(imm, 16) MOD 10000H;
+
+  zc := 0; nc := 0;
+  IF w0 = 0 THEN INC(zc) ELSIF w0 = 0FFFFH THEN INC(nc) END;
+  IF w1 = 0 THEN INC(zc) ELSIF w1 = 0FFFFH THEN INC(nc) END;
+
+  IF nc > zc THEN (* start from all ones *)
+    MovN(r, 0FFFFH - w0, 0);
+    IF w1 # 0FFFFH THEN MovK(r, w1, 16) END
+  ELSE (* start from all zeros *)
+    MovZ(r, w0, 0);
+    IF w1 # 0 THEN MovK(r, w1, 16) END
+  END
 END MovImm;
 
 (** MOV w{r}, #{imm} !FIXME unused, is it 16 bit or 32 bit? !TODO rename*)
@@ -317,6 +369,38 @@ BEGIN
   imm19 := (target - pos) DIV 4;
   WriteWord(pos, 54000000H + (imm19 MOD 80000H) * 20H + cond)
 END PatchBCond;
+
+PROCEDURE Sxtw*(rd, rn: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  (* SXTW Xd, Wn = SBFM Xd, Xn, #0, #31: sign-extend 32→64 bit
+     Encoding: 0x93407C00 | (Rn << 5) | Rd *)
+  n := 13407C00H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Sxtw;
+
+PROCEDURE CSNeg*(rd, rn, rm, cond: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  (* CSNEG Xd, Xn, Xm, cond: Rd = (cond) ? Rn : -Rm
+     Encoding: 1 1 0 | 11010100 | Rm[20:16] | cond[15:12] | 01 | Rn[9:5] | Rd[4:0] *)
+  n := 5A800400H + rm * 10000H + cond * 1000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END CSNeg;
+
+(** AND X{rd}, X{rn}, #1
+     Generic AndImm is not used, because it is a tricky instruction. *)
+PROCEDURE AndImm1*(rd, rn: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  (* AND Xd, Xn, #1
+     Encoding: 1 00100100 1 000000 000000 Rn[9:5] Rd[4:0] = 0x92400000 | Rn<<5 | Rd *)
+  n := 12400000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END AndImm1;
 
 PROCEDURE Here*(): INTEGER;
 RETURN Files.Pos(codeR) END Here;

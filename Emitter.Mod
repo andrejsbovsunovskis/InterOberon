@@ -124,6 +124,55 @@ BEGIN
   END
 END Ord;
 
+(** Absolute value. x := ABS(x) *)
+PROCEDURE AbsVal*(VAR x: Item);
+BEGIN
+  IF x.mode = ST.Const THEN
+    IF x.a < 0 THEN x.a := -x.a END
+  ELSE (* x -- Var or Reg *)
+    Load(x);
+    G.Sxtw(x.r, x.r); (* sign-extend 32->64 so CMP sees true sign *)
+    G.CmpImm(x.r, 0);
+    G.CSNeg(x.r, x.r, x.r, GE)
+  END
+END AbsVal;
+
+(** Odd test. x := ODD(x), result is 0 or 1 *)
+PROCEDURE OddVal*(VAR x: Item);
+BEGIN
+  IF x.mode = ST.Const THEN
+    x.a := ABS(x.a) MOD 2
+  ELSE
+    Load(x);
+    G.AndImm1(x.r, x.r)
+  END
+END OddVal;
+
+(** INC/DEC. obj := obj +/- n. sub=TRUE means DEC. *)
+PROCEDURE IncDecVar*(VAR obj, n: Item; sub: BOOLEAN);
+VAR addr, size: INTEGER;
+BEGIN
+  IF obj.mode # ST.Var THEN S.Mark(E.badVarPar)
+  ELSE
+    addr := obj.a; size := obj.type.size;
+    Load(obj);
+    IF n.mode = ST.Const THEN
+      IF sub THEN G.SubImm(obj.r, obj.r, n.a)
+      ELSE G.AddImm(obj.r, obj.r, n.a)
+      END
+    ELSE
+      Load(n);
+      IF sub THEN G.Sub(obj.r, obj.r, n.r)
+      ELSE G.Add(obj.r, obj.r, n.r)
+      END;
+      DEC(RH)
+    END;
+    G.Adrp(RH, 2);
+    G.StrImm(obj.r, RH, addr, size);
+    DEC(RH)
+  END
+END IncDecVar;
+
 (** Operations **)
 
 (** Negation. x := -x *)
