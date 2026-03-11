@@ -305,6 +305,9 @@ BEGIN
   ELSIF sym = S.int THEN
     Emitter.MakeConstItem(x, ST.intType, S.ival);
     S.Get(sym)
+  ELSIF sym = S.char THEN
+    Emitter.MakeConstItem(x, ST.charType, S.ival);
+    S.Get(sym)
   ELSIF sym = S.ident THEN
     QualIdent(obj);
     IF obj.class = ST.SFunc THEN StandFunc(x, obj.val, obj.type)

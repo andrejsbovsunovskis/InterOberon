@@ -1,8 +1,12 @@
 MODULE Example;
 IMPORT Out;
 VAR
-  a, b, c: INTEGER;
+  a, b, c, x: INTEGER;
 BEGIN
+  a := 1642082199;
+  Out.Int(a, 0);
+  Out.Ln;
+
   (* IF / ELSE *)
   a := -1;
   IF a < 2 THEN Out.Char('Y') ELSE Out.Char('N') END; Out.Ln;  (* Y 0A *)

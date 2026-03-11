@@ -52,6 +52,7 @@ CONST
   commentNotClosed*  = 118;
   longTransName*     = 119;
   badTransName*      = 120;
+  badHex*            = 121;
 
   (** Compiler message codes **)
   compileOk1*        = 1;

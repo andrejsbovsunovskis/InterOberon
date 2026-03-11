@@ -82,7 +82,8 @@ BEGIN
   ASSERT(imm MOD 10000H = imm);
   ASSERT((shift = 0) OR (shift = 16) OR (shift = 32) OR (shift = 48));
 
-  n := (794H * 10000H + (shift DIV 16) * 200000H + imm) * 20H + r;
+  (* MOVK Xr, #imm, LSL#shift  = 0xF2800000 | (hw<<21) | (imm16<<5) | Rd *)
+  n := 72800000H + (shift DIV 16) * 200000H + imm * 20H + r;
   n := -7FFFFFFFH - 1 + n;
 
   DWord(n)

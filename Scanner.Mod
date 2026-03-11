@@ -18,7 +18,7 @@ CONST
   gtr*       = 13; (** >   *)
   geq*       = 14; (** >=  *)
   period*    = 18; (** .   *)
-(*char*      = 20;*)
+  char*      = 20;
   int*       = 21;
   false*     = 23; (** FALSE *)
   true*      = 24; (** TRUE  *)
@@ -224,7 +224,8 @@ END Comment;
 PROCEDURE Get*(VAR sym: INTEGER);
 VAR quote: CHAR;
   marked: BOOLEAN;
-  n: INTEGER;
+  n, hval, hdigits: INTEGER;
+  hexOnly, hexOverflow: BOOLEAN;
   kw: ARRAY 32 OF CHAR;
 BEGIN
   transCount := 0;
@@ -253,7 +254,7 @@ BEGIN
     ELSIF ch = ')' THEN sym := rparen; Read
     ELSIF ch = '&' THEN sym := and; Read
     ELSIF ch = '~' THEN sym := not; Read
-    ELSIF (ch = '"') OR (ch = "'") THEN
+    ELSIF (ch = '"') OR (ch = "'") THEN (* " *)
       quote := ch;
       len := 0;
       marked := FALSE;
@@ -272,15 +273,35 @@ BEGIN
       Read;
       sym := string
     ELSIF ('0' <= ch) & (ch <= '9') THEN
-      ival := 0;
+      ival := 0; hval := 0; hdigits := 0; hexOnly := FALSE; hexOverflow := FALSE;
       REPEAT
-        n := ORD(ch) - ORD('0');
-        IF ival <= (maxInt - n) DIV 10 THEN ival := ival * 10 + n
-        ELSE Mark(E.intOverflow)
+        IF ('0' <= ch) & (ch <= '9') THEN
+          n := ORD(ch) - ORD('0');
+          IF ival <= (maxInt - n) DIV 10 THEN ival := ival * 10 + n
+          ELSE Mark(E.intOverflow)
+          END
+        ELSE (* 'A'..'F' *)
+          n := ORD(ch) - ORD('A') + 10;
+          hexOnly := TRUE
+        END;
+        IF hdigits < 8 THEN
+          hval := hval * 16 + n;
+          INC(hdigits)
+        ELSE hexOverflow := TRUE
         END;
         Read
-      UNTIL ~(('0' <= ch) & (ch <= '9'));
-      sym := int
+      UNTIL ~(('0' <= ch) & (ch <= '9')) & ~(('A' <= ch) & (ch <= 'F'));
+      IF ch = 'H' THEN
+        IF hexOverflow THEN Mark(E.intOverflow) END;
+        ival := hval; sym := int; Read
+      ELSIF ch = 'X' THEN
+        IF hexOverflow OR (hval > 0FFFFH) THEN Mark(E.intOverflow) END;
+        ival := hval; sym := char; Read
+      ELSIF hexOnly THEN
+        Mark(E.badHex); ival := hval; sym := int
+      ELSE
+        sym := int
+      END
     ELSIF IsLetter(ch) THEN
       len := 0;
       REPEAT

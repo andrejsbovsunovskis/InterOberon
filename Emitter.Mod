@@ -487,6 +487,7 @@ END PrepCall;
 
 (** Called after Actual Parameters *)
 PROCEDURE Call*(VAR x: Item; rx: INTEGER);
+VAR skipNeg, loop1, exitLoop1, loop2, exitLoop2: INTEGER;
 BEGIN
   (* x.a is a fake call number, not an offset *)
   IF x.a = 5 (* Out.Char *) THEN
@@ -500,16 +501,67 @@ BEGIN
     G.Svc(0);
     G.AddImm(SP, SP, 16)     (* sp := sp + 16 *)
   ELSIF x.a = 6 (* Out.Int *) THEN
-    (* Simple version: outputs value as a single byte (character) *)
-    (* On entry: w0 = i, w1 = n (ignored) *)
-    G.AddImm(SP, SP, -16);   (* sp := sp - 16 *)
-    G.StrImm(0, SP, 0, 1);   (* STRB w0, [sp, #0] — write i as raw byte *)
-    G.MovImm(0, 1);          (* x0 := 1 (stdout) *)
-    G.Mov(1, SP);            (* x1 := sp (address of byte) *)
-    G.MovImm(2, 1);          (* x2 := 1 (length) *)
-    G.MovImm(16, 4);         (* x16 := write syscall *)
+    (* Print integer as decimal text.
+       On entry: w0 = i, w1 = n (ignored).
+       Scratch registers: x9=value, x10=divisor, x11=digit, x12=mod scratch, x13=div scratch *)
+    G.AddImm(SP, SP, -16);    (* sp := sp - 16 *)
+
+    (* x9 := sign-extend w0 to 64-bit *)
+    G.Sxtw(9, 0);             (* SXTW x9, w0 *)
+
+    (* IF i < 0 THEN print '-'; i := -i END *)
+    G.CmpImm(9, 0);           (* CMP x9, #0 *)
+    skipNeg := G.BCond(10 (* GE *), 0);  (* B.GE skipNeg — skip if i >= 0 *)
+
+    G.MovImm(11, 2DH);        (* w11 := '-' *)
+    G.StrImm(11, SP, 0, 1);   (* STRB w11, [sp, #0] *)
+    G.MovImm(0, 1);           (* x0 := 1 (stdout) *)
+    G.Mov(1, SP);             (* x1 := sp *)
+    G.MovImm(2, 1);           (* x2 := 1 *)
+    G.MovImm(16, 4);          (* x16 := write syscall *)
     G.Svc(0);
-    G.AddImm(SP, SP, 16)     (* sp := sp + 16 *)
+    G.Neg(9, 9);              (* NEG x9, x9 *)
+
+    FixLink(skipNeg);         (* skipNeg: *)
+
+    (* x := 1 *)
+    G.MovImm(10, 1);          (* x10 := 1 *)
+
+    (* WHILE x <= i DIV 10 DO x := x * 10 END *)
+    loop1 := G.Here();
+    G.MovImm(11, 10);         (* x11 := 10 *)
+    G.Div(12, 9, 11);         (* x12 := x9 DIV 10 *)
+    G.Cmp(10, 12);            (* CMP x10, x12 *)
+    exitLoop1 := G.BCond(12 (* GT *), 0);  (* B.GT exitLoop1 *)
+    G.MovImm(11, 10);         (* x11 := 10 *)
+    G.Mul(10, 10, 11);        (* x10 := x10 * 10 *)
+    G.B((loop1 - G.Here()) DIV 4);  (* B loop1 *)
+    FixLink(exitLoop1);       (* exitLoop1: *)
+
+    (* WHILE x # 0 DO Out.Char(CHR(i DIV x MOD 10 + 30H)); x := x DIV 10 END *)
+    loop2 := G.Here();
+    G.CmpImm(10, 0);          (* CMP x10, #0 *)
+    exitLoop2 := G.BCond(0 (* EQ *), 0);  (* B.EQ exitLoop2 *)
+
+    G.Div(11, 9, 10);         (* x11 := x9 DIV x10 *)
+    G.MovImm(12, 10);         (* x12 := 10 *)
+    G.Div(13, 11, 12);        (* x13 := x11 DIV 10 *)
+    G.Msub(11, 13, 12, 11);   (* x11 := x11 - x13*10  =  (i DIV x) MOD 10 *)
+    G.AddImm(11, 11, 30H);    (* x11 := x11 + 0x30  — ASCII digit *)
+
+    G.StrImm(11, SP, 0, 1);   (* STRB w11, [sp, #0] *)
+    G.MovImm(0, 1);           (* x0 := 1 (stdout) *)
+    G.Mov(1, SP);             (* x1 := sp *)
+    G.MovImm(2, 1);           (* x2 := 1 *)
+    G.MovImm(16, 4);          (* x16 := write syscall *)
+    G.Svc(0);
+
+    G.MovImm(12, 10);         (* x12 := 10 *)
+    G.Div(10, 10, 12);        (* x10 := x10 DIV 10 *)
+    G.B((loop2 - G.Here()) DIV 4);  (* B loop2 *)
+    FixLink(exitLoop2);       (* exitLoop2: *)
+
+    G.AddImm(SP, SP, 16)      (* sp := sp + 16 *)
   ELSIF x.a = 7 (* Out.Ln *) THEN
     (* sp must stay 16-byte aligned -> reserve 16 bytes *)
     G.AddImm(SP, SP, -16);    (* sp := sp - 16 *)
