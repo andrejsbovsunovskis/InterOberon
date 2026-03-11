@@ -156,25 +156,22 @@ BEGIN
   DWord(n)
 END Adrp;
 
-(** ADD x{r1}, x{r2}, #{imm} *)
+(** ADD x{r1}, x{r2}, #{imm} if imm > 0,
+     SUB x{r1}, x{r2}, #{imm} if imm < 0 *)
 PROCEDURE AddImm*(r1, r2, imm: INTEGER);
 VAR n: INTEGER;
 BEGIN
-  ASSERT(imm MOD 1000H = imm);
-  n := ((22H * 2000H + imm) * 20H + r2) * 20H + r1;
+  IF imm < 0 THEN
+    (* ADD x, x, #-n  ==  SUB x, x, #n *)
+    ASSERT((-imm) MOD 1000H = (-imm));
+    n := ((0A2H * 2000H + (-imm)) * 20H + r2) * 20H + r1
+  ELSE
+    ASSERT(imm MOD 1000H = imm);
+    n := ((22H * 2000H + imm) * 20H + r2) * 20H + r1
+  END;
   n := -7FFFFFFFH - 1 + n; (* Set highest bit for sf=64bit *)
   DWord(n)
 END AddImm;
-
-(** SUB x{r1}, x{r2}, #{imm} *)
-PROCEDURE SubImm*(r1, r2, imm: INTEGER);
-VAR n: INTEGER;
-BEGIN
-  ASSERT(imm MOD 1000H = imm);
-  n := ((0A2H * 2000H + imm) * 20H + r2) * 20H + r1;
-  n := -7FFFFFFFH - 1 + n; (* Set highest bit for sf=64bit *)
-  DWord(n)
-END SubImm;
 
 (** STR w{r1}, [x{r2}] *)
 PROCEDURE StrH*(r1, r2: INTEGER);

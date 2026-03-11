@@ -131,7 +131,7 @@ BEGIN
     IF x.a < 0 THEN x.a := -x.a END
   ELSE (* x -- Var or Reg *)
     Load(x);
-    G.Sxtw(x.r, x.r); (* sign-extend 32->64 so CMP sees true sign *)
+    IF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
     G.CmpImm(x.r, 0);
     G.CSNeg(x.r, x.r, x.r, GE)
   END
@@ -157,7 +157,7 @@ BEGIN
     addr := obj.a; size := obj.type.size;
     Load(obj);
     IF n.mode = ST.Const THEN
-      IF sub THEN G.SubImm(obj.r, obj.r, n.a)
+      IF sub THEN G.AddImm(obj.r, obj.r, -n.a)
       ELSE G.AddImm(obj.r, obj.r, n.a)
       END
     ELSE
@@ -210,7 +210,7 @@ BEGIN
     IF op = S.plus THEN
       G.AddImm(x.r, x.r, y.a)
     ELSE (* op = S.minus *)
-      G.SubImm(x.r, x.r, y.a)
+      G.AddImm(x.r, x.r, -y.a)
     END
   ELSIF x.mode = ST.Const THEN (* y -- Reg or Var *)
     Load(y); (* x -- Const, y -- Reg *)
@@ -326,11 +326,14 @@ PROCEDURE IntRel*(op: INTEGER; VAR x, y: Item);
 BEGIN
   IF y.mode = ST.Const THEN
     Load(x);
+    IF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
     G.CmpImm(x.r, y.a);
     DEC(RH)
   ELSE
     Load(x);
+    IF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
     Load(y);
+    IF y.type.size = 4 THEN G.Sxtw(y.r, y.r) END;
     G.Cmp(x.r, y.r);
     DEC(RH, 2)
   END;
@@ -488,7 +491,7 @@ BEGIN
   (* x.a is a fake call number, not an offset *)
   IF x.a = 5 (* Out.Char *) THEN
     (* On entry: w0 = c (CHAR value) *)
-    G.SubImm(SP, SP, 16);    (* sp := sp - 16 *)
+    G.AddImm(SP, SP, -16);   (* sp := sp - 16 *)
     G.StrImm(0, SP, 0, 1);   (* STRB w0, [sp, #0] *)
     G.MovImm(0, 1);          (* x0 := 1 (stdout) *)
     G.Mov(1, SP);            (* x1 := sp *)
@@ -499,7 +502,7 @@ BEGIN
   ELSIF x.a = 6 (* Out.Int *) THEN
     (* Simple version: outputs value as a single byte (character) *)
     (* On entry: w0 = i, w1 = n (ignored) *)
-    G.SubImm(SP, SP, 16);    (* sp := sp - 16 *)
+    G.AddImm(SP, SP, -16);   (* sp := sp - 16 *)
     G.StrImm(0, SP, 0, 1);   (* STRB w0, [sp, #0] — write i as raw byte *)
     G.MovImm(0, 1);          (* x0 := 1 (stdout) *)
     G.Mov(1, SP);            (* x1 := sp (address of byte) *)
@@ -509,7 +512,7 @@ BEGIN
     G.AddImm(SP, SP, 16)     (* sp := sp + 16 *)
   ELSIF x.a = 7 (* Out.Ln *) THEN
     (* sp must stay 16-byte aligned -> reserve 16 bytes *)
-    G.SubImm(SP, SP, 16);    (* sp := sp - 16 *)
+    G.AddImm(SP, SP, -16);    (* sp := sp - 16 *)
 
     G.MovImm(3, 0AH);        (* w3 := 0x0A *)
     G.StrImm(3, SP, 0, 1);   (* STRB w3, [sp,#0] *)
