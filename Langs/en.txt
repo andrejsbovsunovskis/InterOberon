@@ -18,6 +18,11 @@ DO=DO
 REPEAT=REPEAT
 UNTIL=UNTIL
 IN=IN
+FOR=FOR
+TO=TO
+BY=BY
+CASE=CASE
+OF=OF
 
 [universe]
 CHAR=CHAR
@@ -39,6 +44,9 @@ BYTE=BYTE
 REAL=REAL
 FLOOR=FLOOR
 FLT=FLT
+SHORTINT=SHORTINT
+LONGINT=LONGINT
+LONGSET=LONGSET
 
 [Out]
 =Out
@@ -64,6 +72,8 @@ Int=Int
 10=THEN expected
 11=DO expected
 12=UNTIL expected
+13=OF expected
+14=TO expected
 30=( expected
 31=) expected
 32=Statement expected

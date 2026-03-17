@@ -85,7 +85,8 @@ BEGIN
         G.FLdrImm(RH, RH, x.a)
       ELSE
         G.Adrp(RH, 2); (* ADRP RH, 2 *)
-        G.LdrImm(RH, RH, x.a, x.type.size) (* LDR* {RH}, [x{RH}, #{x.a}] *)
+        G.LdrImm(RH, RH, x.a, x.type.size); (* LDR* {RH}, [x{RH}, #{x.a}] *)
+        IF x.type.form = ST.ShortInt THEN G.Sxth(RH, RH) END
       END;
       cmpNeeded := TRUE
     END;
@@ -141,7 +142,8 @@ BEGIN
     IF x.a < 0 THEN x.a := -x.a END
   ELSE (* x -- Var or Reg *)
     Load(x);
-    IF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
+    IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
+    ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
     G.CmpImm(x.r, 0);
     G.CSNeg(x.r, x.r, x.r, GE)
   END
@@ -549,14 +551,17 @@ PROCEDURE IntRel*(op: INTEGER; VAR x, y: Item);
 BEGIN
   IF (y.mode = ST.Const) & (y.a >= 0) & (y.a < 1000H) THEN
     Load(x);
-    IF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
+    IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
+    ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
     G.CmpImm(x.r, y.a);
     DEC(RH)
   ELSE
     Load(x);
-    IF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
+    IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
+    ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
     Load(y);
-    IF y.type.size = 4 THEN G.Sxtw(y.r, y.r) END;
+    IF y.type.size = 2 THEN G.Sxth(y.r, y.r)
+    ELSIF y.type.size = 4 THEN G.Sxtw(y.r, y.r) END;
     G.Cmp(x.r, y.r);
     DEC(RH, 2)
   END;
@@ -813,6 +818,116 @@ BEGIN
   END;
   RH := 0 (* Do it only if x is a proper procedure *)
 END Call;
+
+(** FOR loop support **)
+
+(** Save the FOR end value. If endVal is a constant, just saves the value.
+    If it's in a register, pushes it on the stack. *)
+PROCEDURE ForSave*(VAR endVal: Item; VAR savedConst: INTEGER;
+    VAR onStack: BOOLEAN);
+BEGIN
+  IF endVal.mode = ST.Const THEN
+    savedConst := endVal.a;
+    onStack := FALSE
+  ELSE
+    Load(endVal);
+    G.AddImm(G.SP, G.SP, -16);
+    G.StrImm(endVal.r, G.SP, 0, 8);
+    DEC(RH);
+    onStack := TRUE
+  END
+END ForSave;
+
+(** Generate FOR loop condition check. Compares loop variable with saved end
+    value. step > 0: exits when loopVar > end. step < 0: exits when < end. *)
+PROCEDURE ForCond*(obj: ST.Object; onStack: BOOLEAN;
+    savedConst, step: INTEGER; VAR x: Item);
+VAR loopVar, endItem: Item;
+  cond: INTEGER;
+BEGIN
+  MakeItem(loopVar, obj);
+  IF onStack THEN
+    Load(loopVar);
+    IF loopVar.type.size = 2 THEN G.Sxth(loopVar.r, loopVar.r)
+    ELSIF loopVar.type.size = 4 THEN G.Sxtw(loopVar.r, loopVar.r) END;
+    G.LdrImm(RH, G.SP, 0, 8);
+    G.Cmp(loopVar.r, RH);
+    DEC(RH);
+    IF step > 0 THEN cond := LE ELSE cond := GE END;
+    SetCond(loopVar, cond)
+  ELSE
+    MakeConstItem(endItem, obj.type, savedConst);
+    IF step > 0 THEN IntRel(S.leq, loopVar, endItem)
+    ELSE IntRel(S.geq, loopVar, endItem)
+    END
+  END;
+  x := loopVar
+END ForCond;
+
+(** Clean up the stack after a FOR loop if end value was saved there. *)
+PROCEDURE ForClean*(onStack: BOOLEAN);
+BEGIN
+  IF onStack THEN G.AddImm(G.SP, G.SP, 16) END
+END ForClean;
+
+(** CASE statement support **)
+
+(** Save case expression value on the stack. *)
+PROCEDURE CaseSave*(VAR x: Item);
+BEGIN
+  Load(x);
+  IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
+  ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
+  G.AddImm(G.SP, G.SP, -16);
+  G.StrImm(x.r, G.SP, 0, 8);
+  DEC(RH)
+END CaseSave;
+
+(** Compare saved case expression with a single value.
+    Emits conditional jump chained into matchList when equal. *)
+PROCEDURE CaseLabel*(val: INTEGER; VAR matchList: INTEGER);
+BEGIN
+  G.LdrImm(RH, G.SP, 0, 8);
+  IF (val >= 0) & (val < 1000H) THEN
+    G.CmpImm(RH, val)
+  ELSE
+    G.MovImm(RH + 1, val);
+    G.Cmp(RH, RH + 1)
+  END;
+  G.BCond(EQ, matchList);
+  matchList := G.Here() - 1
+END CaseLabel;
+
+(** Compare saved case expression with a range [lo..hi].
+    Emits conditional jump chained into matchList when in range. *)
+PROCEDURE CaseRangeLabel*(lo, hi: INTEGER; VAR matchList: INTEGER);
+VAR skipPos: INTEGER;
+BEGIN
+  G.LdrImm(RH, G.SP, 0, 8);
+  IF (lo >= 0) & (lo < 1000H) THEN
+    G.CmpImm(RH, lo)
+  ELSE
+    G.MovImm(RH + 1, lo);
+    G.Cmp(RH, RH + 1)
+  END;
+  skipPos := G.Here();
+  G.BCond(LT, 0);
+  IF (hi >= 0) & (hi < 1000H) THEN
+    G.CmpImm(RH, hi)
+  ELSE
+    G.MovImm(RH + 1, hi);
+    G.Cmp(RH, RH + 1)
+  END;
+  G.BCond(LE, matchList);
+  matchList := G.Here() - 1;
+  G.PatchBCond(skipPos, G.Here())
+END CaseRangeLabel;
+
+(** Pop the saved case expression from the stack. *)
+PROCEDURE CaseClean*;
+BEGIN
+  G.AddImm(G.SP, G.SP, 16)
+END CaseClean;
 
 (** - **)
 

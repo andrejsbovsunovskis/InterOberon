@@ -32,7 +32,7 @@ RETURN ok END Load;
 
 PROCEDURE CheckInt(VAR x: Emitter.Item);
 BEGIN
-  IF (x.type.form # ST.Int) & (x.type.form # ST.Byte) THEN
+  IF ~(x.type.form IN {ST.Int, ST.Byte, ST.ShortInt, ST.LongInt}) THEN
     S.Mark(E.notInt);
     x.type := ST.intType
   END
@@ -223,15 +223,16 @@ BEGIN
     IF func = 31 (*ORD*) THEN
       IF x.type.form = ST.Char THEN Emitter.Ord(x)
       ELSIF x.type.form = ST.Bool THEN Emitter.Ord(x)
-      ELSIF x.type.form = ST.Set THEN Emitter.Ord(x)
+      ELSIF x.type.form IN {ST.Set, ST.LongSet} THEN Emitter.Ord(x)
       ELSIF x.type.form = ST.Byte THEN Emitter.Ord(x)
       END
     ELSIF func = 32 (*CHR*) THEN
-      IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) THEN Emitter.Ord(x) END
+      IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) OR
+         (x.type.form = ST.ShortInt) OR (x.type.form = ST.LongInt) THEN Emitter.Ord(x) END
     ELSIF func = 33 (*ABS*) THEN
-      IF x.type.form = ST.Int THEN Emitter.AbsVal(x) END
+      IF x.type.form IN {ST.Int, ST.ShortInt, ST.LongInt} THEN Emitter.AbsVal(x) END
     ELSIF func = 34 (*ODD*) THEN
-      IF x.type.form = ST.Int THEN Emitter.OddVal(x) END
+      IF x.type.form IN {ST.Int, ST.ShortInt, ST.LongInt} THEN Emitter.OddVal(x) END
     ELSIF func = 35 (*ASR*) THEN
       CheckInt(x); Emitter.AsrVal(x, y)
     ELSIF func = 36 (*LSL*) THEN
@@ -243,7 +244,7 @@ BEGIN
       ELSE S.Mark(E.incompatible)
       END
     ELSIF func = 39 (*FLT*) THEN
-      IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) THEN Emitter.Flt(x)
+      IF x.type.form IN {ST.Int, ST.Byte, ST.ShortInt, ST.LongInt} THEN Emitter.Flt(x)
       ELSE S.Mark(E.incompatible)
       END
     ELSE ASSERT(FALSE)
@@ -397,10 +398,10 @@ BEGIN
       Factor(y);
       IF y.type.form # ST.Bool THEN S.Mark(E.expBool) END;
       Emitter.And2(x, y)
-    ELSIF (op = S.times) & (x.type.form = ST.Set) THEN
+    ELSIF (op = S.times) & (x.type.form IN {ST.Set, ST.LongSet}) THEN
       Factor(y);
       Emitter.SetInter(x, y)
-    ELSIF (op = S.rdiv) & (x.type.form = ST.Set) THEN
+    ELSIF (op = S.rdiv) & (x.type.form IN {ST.Set, ST.LongSet}) THEN
       Factor(y);
       Emitter.SetSymDiff(x, y)
     ELSIF x.type.form = ST.Real THEN
@@ -412,7 +413,7 @@ BEGIN
       END
     ELSE (* sym = one of mul, div, mod *)
       Factor(y);
-      IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) THEN
+      IF x.type.form IN {ST.Int, ST.Byte, ST.ShortInt, ST.LongInt} THEN
         CheckInt(y);
         Emitter.MulOp(op, x, y)
       ELSE S.Mark(E.incompatible)
@@ -434,7 +435,7 @@ BEGIN
   END;
   Term(x);
   IF minus THEN
-    IF x.type.form = ST.Set THEN Emitter.SetComplement(x)
+    IF x.type.form IN {ST.Set, ST.LongSet} THEN Emitter.SetComplement(x)
     ELSIF x.type.form = ST.Real THEN Emitter.FNegVal(x)
     ELSE Emitter.Neg(x)
     END
@@ -448,7 +449,7 @@ BEGIN
       Term(y);
       IF y.type.form # ST.Bool THEN S.Mark(E.expBool) END;
       Emitter.Or2(x, y)
-    ELSIF x.type.form = ST.Set THEN
+    ELSIF x.type.form IN {ST.Set, ST.LongSet} THEN
       Term(y);
       IF op = S.plus THEN Emitter.SetUnion(x, y)
       ELSE Emitter.SetDiff(x, y)
@@ -459,7 +460,7 @@ BEGIN
       Emitter.FAddOp(op, x, y)
     ELSE (* sym = plus or minus *)
       Term(y);
-      IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) THEN
+      IF x.type.form IN {ST.Int, ST.Byte, ST.ShortInt, ST.LongInt} THEN
         CheckInt(y);
         Emitter.AddOp(op, x, y)
       ELSE S.Mark(E.incompatible)
@@ -484,7 +485,7 @@ BEGIN
     op := sym;
     S.Get(sym);
     SimpleExpr(y);
-    IF (x.type.form IN {ST.Char, ST.Int, ST.Set, ST.Byte}) & ST.TypesCompatible(x.type, y.type) THEN
+    IF (x.type.form IN {ST.Char, ST.Int, ST.Set, ST.Byte, ST.ShortInt, ST.LongInt, ST.LongSet}) & ST.TypesCompatible(x.type, y.type) THEN
       Emitter.IntRel(op, x, y);
       x.type := ST.boolType
     ELSIF (x.type.form = ST.Real) & (y.type.form = ST.Real) THEN
@@ -637,6 +638,129 @@ BEGIN
   END
 END RepeatStatement;
 
+(** ForStatement = FOR ident ":=" expression TO expression [BY constExpr]
+    DO StatementSequence END. *)
+PROCEDURE ForStatement;
+VAR obj: ST.Object;
+  x, y, endVal, inc: Emitter.Item;
+  step, L, savedConst: INTEGER;
+  onStack: BOOLEAN;
+BEGIN
+  S.Get(sym);
+  IF sym = S.ident THEN
+    QualIdent(obj);
+    IF sym = S.becomes THEN S.Get(sym)
+    ELSIF sym = S.eql THEN S.Mark(E.expBecomes); S.Get(sym)
+    ELSE S.Mark(E.expBecomes)
+    END;
+    Assign(obj)
+  ELSE S.Mark(E.expIdent)
+  END;
+  IF sym = S.to THEN S.Get(sym) ELSE S.Mark(E.expTo) END;
+  Expr0(endVal);
+  Emitter.ForSave(endVal, savedConst, onStack);
+  step := 1;
+  IF sym = S.by THEN
+    S.Get(sym);
+    Expr0(y);
+    IF y.mode = ST.Const THEN
+      IF y.a # 0 THEN step := y.a
+      ELSE S.Mark(E.badDiv)
+      END
+    ELSE S.Mark(E.notValue)
+    END
+  END;
+  IF sym = S.do THEN S.Get(sym) ELSE S.Mark(E.expDo) END;
+  L := Generator.Here();
+  Emitter.ForCond(obj, onStack, savedConst, step, x);
+  Emitter.CFJump(x);
+  StatSeq0;
+  Emitter.MakeItem(inc, obj);
+  IF step > 0 THEN
+    Emitter.MakeConstItem(y, obj.type, step);
+    Emitter.IncDecVar(inc, y, FALSE)
+  ELSE
+    Emitter.MakeConstItem(y, obj.type, -step);
+    Emitter.IncDecVar(inc, y, TRUE)
+  END;
+  Emitter.BJump(L);
+  Emitter.Fixup(x);
+  Emitter.ForClean(onStack);
+  IF sym = S.end THEN S.Get(sym) ELSE S.Mark(E.expEnd) END
+END ForStatement;
+
+(** CaseStatement = CASE expression OF case {"|" case}
+    [ELSE StatementSequence] END.
+    case = [caseLabelList ":" StatementSequence].
+    caseLabelList = caseLabels {"," caseLabels}.
+    caseLabels = constExpr [".." constExpr]. *)
+PROCEDURE CaseStatement;
+VAR x, y: Emitter.Item;
+  exitL, matchL, nextL: INTEGER;
+
+  PROCEDURE CaseLabels;
+  VAR x, y: Emitter.Item;
+  BEGIN
+    Expr0(x);
+    IF x.mode # ST.Const THEN S.Mark(E.notValue) END;
+    IF sym = S.upto THEN
+      S.Get(sym); Expr0(y);
+      IF y.mode # ST.Const THEN S.Mark(E.notValue) END;
+      Emitter.CaseRangeLabel(x.a, y.a, matchL)
+    ELSE
+      Emitter.CaseLabel(x.a, matchL)
+    END;
+    WHILE sym = S.comma DO
+      S.Get(sym);
+      Expr0(x);
+      IF x.mode # ST.Const THEN S.Mark(E.notValue) END;
+      IF sym = S.upto THEN
+        S.Get(sym); Expr0(y);
+        IF y.mode # ST.Const THEN S.Mark(E.notValue) END;
+        Emitter.CaseRangeLabel(x.a, y.a, matchL)
+      ELSE
+        Emitter.CaseLabel(x.a, matchL)
+      END
+    END
+  END CaseLabels;
+
+BEGIN
+  S.Get(sym);
+  Expr0(x);
+  Emitter.CaseSave(x);
+  IF sym = S.of THEN S.Get(sym) ELSE S.Mark(E.expOf) END;
+  exitL := 0;
+  IF sym = S.bar THEN S.Get(sym) END;
+  matchL := 0;
+  CaseLabels;
+  nextL := 0;
+  Emitter.FJump(nextL);
+  Emitter.FixLink(matchL);
+  IF sym = S.colon THEN S.Get(sym) ELSE S.Mark(E.expColon) END;
+  StatSeq0;
+  Emitter.FJump(exitL);
+  Emitter.FixLink(nextL);
+  WHILE sym = S.bar DO
+    S.Get(sym);
+    matchL := 0;
+    CaseLabels;
+    nextL := 0;
+    Emitter.FJump(nextL);
+    Emitter.FixLink(matchL);
+    IF sym = S.colon THEN S.Get(sym) ELSE S.Mark(E.expColon) END;
+    StatSeq0;
+    Emitter.FJump(exitL);
+    Emitter.FixLink(nextL)
+  END;
+  IF sym = S.else THEN
+    S.Get(sym);
+    StatSeq0
+  END;
+  Emitter.FixLink(exitL);
+  Emitter.CaseClean;
+  IF sym = S.end THEN S.Get(sym) ELSE S.Mark(E.expEnd) END
+END CaseStatement;
+
 (** Statement = [Assign | ProcedureCall | IfStatement |
     WhileStatement | RepeatStatement ]. *)
 PROCEDURE Statement;
@@ -662,6 +786,10 @@ BEGIN
     WhileStatement
   ELSIF sym = S.repeat THEN
     RepeatStatement
+  ELSIF sym = S.for THEN
+    ForStatement
+  ELSIF sym = S.case THEN
+    CaseStatement
   END
 END Statement;
 

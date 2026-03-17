@@ -14,6 +14,8 @@ CONST
   expThen*           = 10;
   expDo*             = 11;
   expUntil*          = 12;
+  expOf*             = 13;
+  expTo*             = 14;
   expLparen*         = 30;
   expRparen*         = 31;
   expStatement*      = 32;

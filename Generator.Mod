@@ -371,6 +371,16 @@ BEGIN
   WriteWord(pos, 54000000H + (imm19 MOD 80000H) * 20H + cond)
 END PatchBCond;
 
+PROCEDURE Sxth*(rd, rn: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  (* SXTH Xd, Wn = SBFM Xd, Xn, #0, #15: sign-extend 16→64 bit
+     Encoding: 0x93403C00 | (Rn << 5) | Rd *)
+  n := 13403C00H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Sxth;
+
 PROCEDURE Sxtw*(rd, rn: INTEGER);
 VAR n: INTEGER;
 BEGIN

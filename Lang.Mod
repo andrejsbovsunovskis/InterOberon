@@ -55,7 +55,7 @@ VAR
   errors: ARRAY 128, 80 OF CHAR; (** error code < 128, error length < 80 *)
   compiler: ARRAY 13, 80 OF CHAR; (** 13 compiler messages, length < 80 *)
   kw: ARRAY 32 OF Pair; (** 32 keywords like BEGIN *)
-  uni: ARRAY 19 OF Pair; (** 19 universe objects like INTEGER *)
+  uni: ARRAY 22 OF Pair; (** 22 universe objects like INTEGER *)
   mods: ARRAY 2 OF Module; (** 2 modules like Out *)
   modCount: INTEGER; (** Actual length of mods *)
 

@@ -32,15 +32,21 @@ CONST
   rbrace*    = 30; (** } *)
   ident*     = 31;
   if*        = 32;
+  for*       = 33;
   while*     = 34;
   repeat*    = 35;
   in*        = 36;  (** IN *)
+  case*      = 37;
+  of*        = 38;
+  bar*       = 39;  (** | *)
   comma*     = 40;
   colon*     = 41;
   becomes*   = 42; (** := *)
   rparen*    = 44; (** )  *)
   then*      = 47;
+  to*        = 48;
   do*        = 49;
+  by*        = 50;
   semicol*   = 52;
   end*       = 53;
   else*      = 55;
@@ -305,6 +311,7 @@ BEGIN
     ELSIF ch = '~' THEN sym := not; Read
     ELSIF ch = '{' THEN sym := lbrace; Read
     ELSIF ch = '}' THEN sym := rbrace; Read
+    ELSIF ch = '|' THEN sym := bar; Read
     ELSIF (ch = '"') OR (ch = "'") THEN (* " *)
       quote := ch;
       len := 0;
@@ -406,6 +413,11 @@ BEGIN
       ELSIF kw = 'REPEAT' THEN sym := repeat
       ELSIF kw = 'UNTIL'  THEN sym := until
       ELSIF kw = 'IN'     THEN sym := in
+      ELSIF kw = 'FOR'    THEN sym := for
+      ELSIF kw = 'TO'     THEN sym := to
+      ELSIF kw = 'BY'     THEN sym := by
+      ELSIF kw = 'CASE'   THEN sym := case
+      ELSIF kw = 'OF'     THEN sym := of
       ELSE Mark(E.unknownKW)
       END
     ELSE sym := null; Read

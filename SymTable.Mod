@@ -13,14 +13,17 @@ CONST
   Mod*   = 8;
 
   (** Type Forms **)
-  Bool*  = 2;
-  Char*  = 3;
-  Int*   = 4;
-  Set*   = 5;
-  Byte*  = 6;
-  Real*  = 7;
-  NoTyp* = 9;
-  Proc*  = 10;
+  Bool*     = 2;
+  Char*     = 3;
+  Int*      = 4;
+  Set*      = 5;
+  Byte*     = 6;
+  Real*     = 7;
+  NoTyp*    = 9;
+  Proc*     = 10;
+  ShortInt* = 11;
+  LongInt*  = 12;
+  LongSet*  = 13;
 
 TYPE
   Object* = POINTER TO ObjectDesc;
@@ -63,6 +66,7 @@ VAR
 
   (** Standard Types **)
   boolType*, charType*, intType*, setType*, byteType*, realType*, noType*: Type;
+  shortIntType*, longIntType*, longSetType*: Type;
 
   (** - **)
   langs: Lang;
@@ -246,6 +250,24 @@ BEGIN
   U.val := 39;
   U.type := realType;
 
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('SHORTINT', s); SetName(U.names, s);
+  U.class := Typ;
+  U.type := shortIntType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('LONGINT', s); SetName(U.names, s);
+  U.class := Typ;
+  U.type := longIntType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('LONGSET', s); SetName(U.names, s);
+  U.class := Typ;
+  U.type := longSetType;
+
   U.next := dummy
 END InitUniverse;
 
@@ -278,7 +300,8 @@ END CloseScope;
 (** Returns TRUE if types t1 and t2 are assignment-compatible (t1 := t2) *)
 PROCEDURE TypesCompatible*(t1, t2: Type): BOOLEAN;
 RETURN (t1.form = t2.form)
-    OR ((t1.form = Int) OR (t1.form = Byte)) & ((t2.form = Int) OR (t2.form = Byte))
+    OR (t1.form IN {Int, Byte, ShortInt, LongInt}) & (t2.form IN {Int, Byte, ShortInt, LongInt})
+    OR (t1.form IN {Set, LongSet}) & (t2.form IN {Set, LongSet})
 END TypesCompatible;
 
 PROCEDURE ThisObject*(): Object;
@@ -579,11 +602,14 @@ BEGIN NEW(T); T.form := form; T.size := size
 RETURN T END CreateType;
 
 BEGIN
-  boolType := CreateType(Bool , 1);
-  charType := CreateType(Char , 2);
-  intType  := CreateType(Int  , 4);
-  setType  := CreateType(Set  , 4);
-  byteType := CreateType(Byte , 1);
-  realType := CreateType(Real , 4);
-  noType   := CreateType(NoTyp, 0)
+  boolType     := CreateType(Bool    , 1);
+  charType     := CreateType(Char    , 2);
+  intType      := CreateType(Int     , 4);
+  setType      := CreateType(Set     , 4);
+  byteType     := CreateType(Byte    , 1);
+  realType     := CreateType(Real    , 4);
+  noType       := CreateType(NoTyp   , 0);
+  shortIntType := CreateType(ShortInt, 2);
+  longIntType  := CreateType(LongInt , 8);
+  longSetType  := CreateType(LongSet , 8)
 END SymTable.

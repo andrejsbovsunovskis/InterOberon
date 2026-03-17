@@ -18,6 +18,11 @@ DO=DARĪT
 REPEAT=ATKĀRTOT
 UNTIL=LĪDZ
 IN=IEKSH
+FOR=KATRAM
+TO=LIDZ
+BY=PA
+CASE=GADIJUMS
+OF=NO
 
 [universe]
 CHAR=LITERA
@@ -39,6 +44,9 @@ BYTE=BAITS
 REAL=REALS
 FLOOR=VESELS
 FLT=PLUD
+SHORTINT=ISAISVES
+LONGINT=GARAISVES
+LONGSET=GARAKOPA
 
 [Out]
 =Izvade
@@ -64,6 +72,8 @@ Int=Veselais
 10=Tiek gaidīts TAD
 11=Tiek gaidīts DARĪT
 12=Tiek gaidīts LĪDZ
+13=Tiek gaidīts NO
+14=Tiek gaidīts LIDZ
 30=Tiek gaidīts (
 31=Tiek gaidīts )
 32=Tiek gaidīts operators
