@@ -17,6 +17,7 @@ CONST
   expLparen*         = 30;
   expRparen*         = 31;
   expStatement*      = 32;
+  expRbrace*         = 33;
 
   notValue*          = 40;
   notInt*            = 41;

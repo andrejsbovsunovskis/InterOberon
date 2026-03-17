@@ -15,7 +15,7 @@ VAR
   outR: Files.Rider;
 
   codeFile: Files.File; (** Temporary file (buffer) for machine code output *)
-  codeR: Files.Rider;
+  codeR: Files.Rider; (** ARM64 instructions must land on positions divisible by 4 *)
 
 (** Outputs 1 byte. *)
 PROCEDURE Byte*(x: BYTE);
@@ -307,50 +307,41 @@ BEGIN
   DWord(n)
 END Mov;
 
-(** Random-access read of a 4-byte instruction from codeFile. *)
+(** Random-access read of a 4-byte instruction from codeFile.
+    pos is the word offset. *)
 PROCEDURE ReadWord*(pos: INTEGER): INTEGER;
 VAR r: Files.Rider;
   b0, b1, b2, b3: BYTE;
 BEGIN
-  Files.Set(r, codeFile, pos);
+  Files.Set(r, codeFile, pos * 4);
   Files.Read(r, b0); Files.Read(r, b1);
   Files.Read(r, b2); Files.Read(r, b3);
   RETURN b0 + b1 * 100H + b2 * 10000H + b3 * 1000000H
 END ReadWord;
 
-(** Random-access write of a 4-byte instruction to codeFile. *)
+(** Random-access write of a 4-byte instruction to codeFile.
+    pos is the word offset. *)
 PROCEDURE WriteWord*(pos, instr: INTEGER);
 VAR r: Files.Rider;
 BEGIN
-  Files.Set(r, codeFile, pos);
+  Files.Set(r, codeFile, pos * 4);
   Files.Write(r, instr MOD 100H);
   Files.Write(r, instr DIV 100H  MOD 100H);
   Files.Write(r, instr DIV 10000H  MOD 100H);
   Files.Write(r, instr DIV 1000000H MOD 100H)
 END WriteWord;
 
-(** Emit B.cond as a linked-list node.
-    cond     = ARM64 condition code (0..15).
-    listPrev = byte offset of previous list head (0 = none), stored as imm19.
-    Returns byte offset of this instruction (use as new list head). *)
-PROCEDURE BCond*(cond, listPrev: INTEGER): INTEGER;
-VAR here, n: INTEGER;
-BEGIN
-  here := Files.Pos(codeR);
-  n := 54000000H + (listPrev DIV 4 MOD 80000H) * 20H + cond;
-  DWord(n);
-  RETURN here
-END BCond;
-
-(** Emit B.cond with a real signed instruction-word offset (for CBJump). *)
-PROCEDURE BCondReal*(cond, offset: INTEGER);
+(** Emit B.cond with a signed word offset (for CBJump).
+    cond   = ARM64 condition code (0..15).
+    offset = word offset of previous list head (0 = none), stored as imm19. *)
+PROCEDURE BCond*(cond, offset: INTEGER);
 VAR n: INTEGER;
 BEGIN
   n := 54000000H + (offset MOD 80000H) * 20H + cond;
   DWord(n)
-END BCondReal;
+END BCond;
 
-(** Emit unconditional B with a real signed instruction-word offset. *)
+(** Emit unconditional B (branch) with a real signed word offset. *)
 PROCEDURE B*(offset: INTEGER);
 VAR n: INTEGER;
 BEGIN
@@ -358,13 +349,25 @@ BEGIN
   DWord(n)
 END B;
 
-(** Backpatch B.cond at pos: rewrite imm19 with (target-pos)/4, preserve cond. *)
+(** Returns the sign-extended immediate 19-bit value stored
+    in B.Cond instruction.
+    pos = offset (in words) of the instruction. *)
+PROCEDURE ImmFromBCond*(pos: INTEGER): INTEGER;
+VAR instr, imm19: INTEGER;
+BEGIN
+  instr := ReadWord(pos);
+  imm19 := (instr DIV 20H) MOD 80000H;
+  IF imm19 >= 40000H THEN DEC(imm19, 80000H) END (* sign-extend 19 bits *)
+RETURN imm19 END ImmFromBCond;
+
+(** Backpatches B.cond at pos by rewriting imm19 with (target - pos),
+    preserving cond. *)
 PROCEDURE PatchBCond*(pos, target: INTEGER);
 VAR instr, cond, imm19: INTEGER;
 BEGIN
   instr := ReadWord(pos);
   cond  := instr MOD 10H;
-  imm19 := (target - pos) DIV 4;
+  imm19 := target - pos;
   WriteWord(pos, 54000000H + (imm19 MOD 80000H) * 20H + cond)
 END PatchBCond;
 
@@ -400,8 +403,163 @@ BEGIN
   DWord(n)
 END AndImm1;
 
+(** ASRV x{rd}, x{rn}, x{rm} — arithmetic shift right *)
+PROCEDURE Asr*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 1AC02800H + rm * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Asr;
+
+(** LSLV x{rd}, x{rn}, x{rm} — logical shift left *)
+PROCEDURE Lsl*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 1AC02000H + rm * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Lsl;
+
+(** RORV x{rd}, x{rn}, x{rm} — rotate right *)
+PROCEDURE Ror*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 1AC02C00H + rm * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Ror;
+
+(** ORR x{rd}, x{rn}, x{rm} — bitwise OR *)
+PROCEDURE Orr*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 2A000000H + rm * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* 0xAA000000 *)
+  DWord(n)
+END Orr;
+
+(** AND x{rd}, x{rn}, x{rm} — bitwise AND *)
+PROCEDURE And*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 0A000000H + rm * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* 0x8A000000 *)
+  DWord(n)
+END And;
+
+(** EOR x{rd}, x{rn}, x{rm} — bitwise XOR *)
+PROCEDURE Eor*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 4A000000H + rm * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* 0xCA000000 *)
+  DWord(n)
+END Eor;
+
+(** BIC x{rd}, x{rn}, x{rm} — bitwise AND NOT (bit clear) *)
+PROCEDURE Bic*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 0A200000H + rm * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* 0x8A200000 *)
+  DWord(n)
+END Bic;
+
+(** MVN x{rd}, x{rm} — bitwise NOT, encoded as ORN xd, xzr, xm *)
+PROCEDURE Mvn*(rd, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 2A200000H + rm * 10000H + 1FH * 20H + rd;
+  n := -7FFFFFFFH - 1 + n; (* 0xAA200000 *)
+  DWord(n)
+END Mvn;
+
+(** TST x{rn}, x{rm} — test bits, encoded as ANDS xzr, xrn, xrm *)
+PROCEDURE Tst*(rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 6A000000H + rm * 10000H + rn * 20H + 1FH;
+  n := -7FFFFFFFH - 1 + n; (* 0xEA000000 *)
+  DWord(n)
+END Tst;
+
+(** ---- Floating-point instructions (single-precision) ---- *)
+
+(** FADD Sd, Sn, Sm *)
+PROCEDURE FAdd*(fd, fn, fm: INTEGER);
+BEGIN DWord(1E202800H + fm * 10000H + fn * 20H + fd)
+END FAdd;
+
+(** FSUB Sd, Sn, Sm *)
+PROCEDURE FSub*(fd, fn, fm: INTEGER);
+BEGIN DWord(1E203800H + fm * 10000H + fn * 20H + fd)
+END FSub;
+
+(** FMUL Sd, Sn, Sm *)
+PROCEDURE FMul*(fd, fn, fm: INTEGER);
+BEGIN DWord(1E200800H + fm * 10000H + fn * 20H + fd)
+END FMul;
+
+(** FDIV Sd, Sn, Sm *)
+PROCEDURE FDiv*(fd, fn, fm: INTEGER);
+BEGIN DWord(1E201800H + fm * 10000H + fn * 20H + fd)
+END FDiv;
+
+(** FCMP Sn, Sm — sets NZCV flags *)
+PROCEDURE FCmp*(fn, fm: INTEGER);
+BEGIN DWord(1E202000H + fm * 10000H + fn * 20H)
+END FCmp;
+
+(** FNEG Sd, Sn *)
+PROCEDURE FNeg*(fd, fn: INTEGER);
+BEGIN DWord(1E214000H + fn * 20H + fd)
+END FNeg;
+
+(** SCVTF Sd, Wn — signed 32-bit integer to single-precision float *)
+PROCEDURE Scvtf*(fd, rn: INTEGER);
+BEGIN DWord(1E220000H + rn * 20H + fd)
+END Scvtf;
+
+(** FCVTZS Wd, Sn — single-precision float to signed 32-bit integer *)
+PROCEDURE Fcvtzs*(rd, fn: INTEGER);
+BEGIN DWord(1E380000H + fn * 20H + rd)
+END Fcvtzs;
+
+(** FMOV Sd, Wn — move bits from GPR to FPR *)
+PROCEDURE FMovWtoS*(fd, rn: INTEGER);
+BEGIN DWord(1E270000H + rn * 20H + fd)
+END FMovWtoS;
+
+(** FMOV Wd, Sn — move bits from FPR to GPR *)
+PROCEDURE FMovStoW*(rd, fn: INTEGER);
+BEGIN DWord(1E260000H + fn * 20H + rd)
+END FMovStoW;
+
+(** LDR St, [Xn, #imm] — load single-precision float from memory *)
+PROCEDURE FLdrImm*(ft, rn, imm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  imm := imm DIV 4;
+  ASSERT(imm MOD 1000H = imm);
+  n := 3D400000H + imm * 400H + rn * 20H + ft;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END FLdrImm;
+
+(** STR St, [Xn, #imm] — store single-precision float to memory *)
+PROCEDURE FStrImm*(ft, rn, imm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  imm := imm DIV 4;
+  ASSERT(imm MOD 1000H = imm);
+  n := 3D000000H + imm * 400H + rn * 20H + ft;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END FStrImm;
+
 PROCEDURE Here*(): INTEGER;
-RETURN Files.Pos(codeR) END Here;
+RETURN Files.Pos(codeR) DIV 4 END Here;
 
 PROCEDURE Init*;
 BEGIN

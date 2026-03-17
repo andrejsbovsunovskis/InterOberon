@@ -17,6 +17,7 @@ WHILE=WHILE
 DO=DO
 REPEAT=REPEAT
 UNTIL=UNTIL
+IN=IN
 
 [universe]
 CHAR=CHAR
@@ -28,6 +29,16 @@ ABS=ABS
 ODD=ODD
 INC=INC
 DEC=DEC
+ASR=ASR
+LSL=LSL
+ROR=ROR
+SET=SET
+INCL=INCL
+EXCL=EXCL
+BYTE=BYTE
+REAL=REAL
+FLOOR=FLOOR
+FLT=FLT
 
 [Out]
 =Out
@@ -56,6 +67,7 @@ Int=Int
 30=( expected
 31=) expected
 32=Statement expected
+33=} expected
 40=This is not a value
 41=This is not an integer
 42=Returned value is not used

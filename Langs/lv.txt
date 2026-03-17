@@ -17,6 +17,7 @@ WHILE=KAMĒR
 DO=DARĪT
 REPEAT=ATKĀRTOT
 UNTIL=LĪDZ
+IN=IEKSH
 
 [universe]
 CHAR=LITERA
@@ -28,6 +29,16 @@ ABS=ABS
 ODD=NEPAR
 INC=INC
 DEC=DEC
+ASR=ASR
+LSL=LSL
+ROR=ROR
+SET=KOPA
+INCL=IEKL
+EXCL=IZSL
+BYTE=BAITS
+REAL=REALS
+FLOOR=VESELS
+FLT=PLUD
 
 [Out]
 =Izvade
@@ -56,6 +67,7 @@ Int=Veselais
 30=Tiek gaidīts (
 31=Tiek gaidīts )
 32=Tiek gaidīts operators
+33=Tiek gaidīts }
 40=Šī nav vērtība
 41=Šis nav vesels skaitlis
 42=Atgrieztā vērtība netiek izmantota

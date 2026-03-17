@@ -16,6 +16,9 @@ CONST
   Bool*  = 2;
   Char*  = 3;
   Int*   = 4;
+  Set*   = 5;
+  Byte*  = 6;
+  Real*  = 7;
   NoTyp* = 9;
   Proc*  = 10;
 
@@ -59,7 +62,7 @@ VAR
   dummy*: Object;
 
   (** Standard Types **)
-  boolType*, charType*, intType*, noType*: Type;
+  boolType*, charType*, intType*, setType*, byteType*, realType*, noType*: Type;
 
   (** - **)
   langs: Lang;
@@ -136,6 +139,12 @@ BEGIN
 
   NEW(U.next);
   U := U.next;
+  L.FindUniObj('SET', s); SetName(U.names, s);
+  U.class := Typ;
+  U.type := setType;
+
+  NEW(U.next);
+  U := U.next;
   L.FindUniObj('ORD', s); SetName(U.names, s);
   U.class := SFunc;
   U.val := 31;
@@ -164,6 +173,27 @@ BEGIN
 
   NEW(U.next);
   U := U.next;
+  L.FindUniObj('ASR', s); SetName(U.names, s);
+  U.class := SFunc;
+  U.val := 35;
+  U.type := intType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('LSL', s); SetName(U.names, s);
+  U.class := SFunc;
+  U.val := 36;
+  U.type := intType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('ROR', s); SetName(U.names, s);
+  U.class := SFunc;
+  U.val := 37;
+  U.type := intType;
+
+  NEW(U.next);
+  U := U.next;
   L.FindUniObj('INC', s); SetName(U.names, s);
   U.class := SProc;
   U.val := 41;
@@ -175,6 +205,46 @@ BEGIN
   U.class := SProc;
   U.val := 42;
   U.type := noType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('INCL', s); SetName(U.names, s);
+  U.class := SProc;
+  U.val := 43;
+  U.type := noType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('EXCL', s); SetName(U.names, s);
+  U.class := SProc;
+  U.val := 44;
+  U.type := noType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('BYTE', s); SetName(U.names, s);
+  U.class := Typ;
+  U.type := byteType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('REAL', s); SetName(U.names, s);
+  U.class := Typ;
+  U.type := realType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('FLOOR', s); SetName(U.names, s);
+  U.class := SFunc;
+  U.val := 38;
+  U.type := intType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('FLT', s); SetName(U.names, s);
+  U.class := SFunc;
+  U.val := 39;
+  U.type := realType;
 
   U.next := dummy
 END InitUniverse;
@@ -207,7 +277,9 @@ END CloseScope;
 
 (** Returns TRUE if types t1 and t2 are assignment-compatible (t1 := t2) *)
 PROCEDURE TypesCompatible*(t1, t2: Type): BOOLEAN;
-RETURN t1.form = t2.form END TypesCompatible;
+RETURN (t1.form = t2.form)
+    OR ((t1.form = Int) OR (t1.form = Byte)) & ((t2.form = Int) OR (t2.form = Byte))
+END TypesCompatible;
 
 PROCEDURE ThisObject*(): Object;
 VAR scope, p: Object;
@@ -510,5 +582,8 @@ BEGIN
   boolType := CreateType(Bool , 1);
   charType := CreateType(Char , 2);
   intType  := CreateType(Int  , 4);
+  setType  := CreateType(Set  , 4);
+  byteType := CreateType(Byte , 1);
+  realType := CreateType(Real , 4);
   noType   := CreateType(NoTyp, 0)
 END SymTable.

@@ -5,6 +5,7 @@ CONST
   (** Symbols **)
   null       = 0;  (** Bad character *)
   times*     = 1;  (** *   *)
+  rdiv*      = 2;  (** /   *)
   div*       = 3;  (** DIV *)
   mod*       = 4;  (** MOD *)
   and*       = 5;  (** &   *)
@@ -18,17 +19,22 @@ CONST
   gtr*       = 13; (** >   *)
   geq*       = 14; (** >=  *)
   period*    = 18; (** .   *)
+  upto*      = 19; (** ..  *)
   char*      = 20;
   int*       = 21;
+  real*      = 22;
   false*     = 23; (** FALSE *)
   true*      = 24; (** TRUE  *)
   string*    = 26;
   not*       = 27; (** ~ *)
   lparen*    = 28; (** ( *)
+  lbrace*    = 29; (** { *)
+  rbrace*    = 30; (** } *)
   ident*     = 31;
   if*        = 32;
   while*     = 34;
   repeat*    = 35;
+  in*        = 36;  (** IN *)
   comma*     = 40;
   colon*     = 41;
   becomes*   = 42; (** := *)
@@ -66,6 +72,7 @@ VAR
   sval*: ARRAY 256 OF CHAR; (** When sym = string *)
 
   ch: CHAR; (* Used in Get *)
+  pendingSym: INTEGER; (* Saved symbol for real literal lookahead *)
 
   error*: BOOLEAN; (* FALSE if ok *)
   errPos: INTEGER; (* Position of last error *)
@@ -96,6 +103,7 @@ BEGIN
   nextLine := FALSE;
   error := FALSE;
   errPos := -10;
+  pendingSym := 0;
   Read
 END Rewind;
 
@@ -221,13 +229,52 @@ BEGIN
   END
 END Comment;
 
+(** Converts a decimal number ip.fracNum/fracDen to IEEE 754
+    single-precision bit pattern using pure integer arithmetic. *)
+PROCEDURE EncodeReal(ip, fracNum, fracDen: INTEGER): INTEGER;
+VAR exp, mantissa, num, den, bit, result: INTEGER;
+BEGIN
+  IF (ip = 0) & (fracNum = 0) THEN
+    result := 0
+  ELSE
+    num := ip * fracDen + fracNum;
+    den := fracDen;
+    exp := 0;
+    WHILE num - den >= den DO
+      den := den + den;
+      INC(exp)
+    END;
+    WHILE num < den DO
+      num := num + num;
+      DEC(exp)
+    END;
+    num := num - den;
+    mantissa := 0;
+    bit := 22;
+    WHILE bit >= 0 DO
+      num := num + num;
+      IF num >= den THEN
+        mantissa := mantissa + LSL(1, bit);
+        num := num - den
+      END;
+      DEC(bit)
+    END;
+    result := LSL(exp + 127, 23) + mantissa
+  END
+RETURN result END EncodeReal;
+
 PROCEDURE Get*(VAR sym: INTEGER);
 VAR quote: CHAR;
   marked: BOOLEAN;
   n, hval, hdigits: INTEGER;
+  fracNum, fracDen: INTEGER;
   hexOnly, hexOverflow: BOOLEAN;
   kw: ARRAY 32 OF CHAR;
 BEGIN
+  IF pendingSym # 0 THEN
+    sym := pendingSym;
+    pendingSym := 0
+  ELSE
   transCount := 0;
   REPEAT
     (* Skip whitespaces *)
@@ -244,9 +291,11 @@ BEGIN
     ELSIF ch = '>' THEN Read;
       IF ch = '=' THEN sym := geq; Read ELSE sym := gtr END
     ELSIF ch = ';' THEN sym := semicol; Read
-    ELSIF ch = '.' THEN sym := period; Read
+    ELSIF ch = '.' THEN Read;
+      IF ch = '.' THEN sym := upto; Read ELSE sym := period END
     ELSIF ch = ',' THEN sym := comma; Read
     ELSIF ch = '*' THEN sym := times; Read
+    ELSIF ch = '/' THEN sym := rdiv; Read
     ELSIF ch = '+' THEN sym := plus; Read
     ELSIF ch = '-' THEN sym := minus; Read
     ELSIF ch = '(' THEN Read;
@@ -254,6 +303,8 @@ BEGIN
     ELSIF ch = ')' THEN sym := rparen; Read
     ELSIF ch = '&' THEN sym := and; Read
     ELSIF ch = '~' THEN sym := not; Read
+    ELSIF ch = '{' THEN sym := lbrace; Read
+    ELSIF ch = '}' THEN sym := rbrace; Read
     ELSIF (ch = '"') OR (ch = "'") THEN (* " *)
       quote := ch;
       len := 0;
@@ -299,6 +350,28 @@ BEGIN
         ival := hval; sym := char; Read
       ELSIF hexOnly THEN
         Mark(E.badHex); ival := hval; sym := int
+      ELSIF ch = '.' THEN
+        Read;
+        IF ('0' <= ch) & (ch <= '9') THEN
+          fracNum := 0; fracDen := 1;
+          WHILE ('0' <= ch) & (ch <= '9') DO
+            n := ORD(ch) - ORD('0');
+            IF fracDen <= maxInt DIV 10 THEN
+              fracNum := fracNum * 10 + n;
+              fracDen := fracDen * 10
+            END;
+            Read
+          END;
+          ival := EncodeReal(ival, fracNum, fracDen);
+          sym := real
+        ELSIF ch = '.' THEN
+          sym := int;
+          pendingSym := upto;
+          Read
+        ELSE
+          sym := int;
+          pendingSym := period
+        END
       ELSE
         sym := int
       END
@@ -332,11 +405,13 @@ BEGIN
       ELSIF kw = 'DO'     THEN sym := do
       ELSIF kw = 'REPEAT' THEN sym := repeat
       ELSIF kw = 'UNTIL'  THEN sym := until
+      ELSIF kw = 'IN'     THEN sym := in
       ELSE Mark(E.unknownKW)
       END
     ELSE sym := null; Read
     END
   UNTIL sym # null
+  END (* IF pendingSym *)
 END Get;
 
 END Scanner.

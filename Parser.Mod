@@ -32,7 +32,7 @@ RETURN ok END Load;
 
 PROCEDURE CheckInt(VAR x: Emitter.Item);
 BEGIN
-  IF x.type.form # ST.Int THEN
+  IF (x.type.form # ST.Int) & (x.type.form # ST.Byte) THEN
     S.Mark(E.notInt);
     x.type := ST.intType
   END
@@ -202,28 +202,50 @@ END QualIdent;
 PROCEDURE StandFunc(VAR x: Emitter.Item; func: INTEGER; resType: ST.Type);
 VAR y: Emitter.Item;
   n: INTEGER;
+  is2arg: BOOLEAN;
 BEGIN
+  is2arg := (func >= 35) & (func <= 37);
   IF sym = S.lparen THEN
     S.Get(sym);
     Expr0(x);
     n := 1;
-    WHILE sym = S.comma DO (* Max 2 params, but skip all *)
+    WHILE sym = S.comma DO
       S.Get(sym);
       Expr0(y);
       INC(n)
     END;
-    IF n # 1 THEN S.Mark(E.moreParams) END;
+    IF is2arg THEN
+      IF n # 2 THEN S.Mark(E.fewerParams) END
+    ELSE
+      IF n # 1 THEN S.Mark(E.moreParams) END
+    END;
     IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END;
     IF func = 31 (*ORD*) THEN
       IF x.type.form = ST.Char THEN Emitter.Ord(x)
       ELSIF x.type.form = ST.Bool THEN Emitter.Ord(x)
+      ELSIF x.type.form = ST.Set THEN Emitter.Ord(x)
+      ELSIF x.type.form = ST.Byte THEN Emitter.Ord(x)
       END
     ELSIF func = 32 (*CHR*) THEN
-      IF x.type.form = ST.Int THEN Emitter.Ord(x) END
+      IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) THEN Emitter.Ord(x) END
     ELSIF func = 33 (*ABS*) THEN
       IF x.type.form = ST.Int THEN Emitter.AbsVal(x) END
     ELSIF func = 34 (*ODD*) THEN
       IF x.type.form = ST.Int THEN Emitter.OddVal(x) END
+    ELSIF func = 35 (*ASR*) THEN
+      CheckInt(x); Emitter.AsrVal(x, y)
+    ELSIF func = 36 (*LSL*) THEN
+      CheckInt(x); Emitter.LslVal(x, y)
+    ELSIF func = 37 (*ROR*) THEN
+      CheckInt(x); Emitter.RorVal(x, y)
+    ELSIF func = 38 (*FLOOR*) THEN
+      IF x.type.form = ST.Real THEN Emitter.Floor(x)
+      ELSE S.Mark(E.incompatible)
+      END
+    ELSIF func = 39 (*FLT*) THEN
+      IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) THEN Emitter.Flt(x)
+      ELSE S.Mark(E.incompatible)
+      END
     ELSE ASSERT(FALSE)
     END;
     x.type := resType
@@ -247,6 +269,8 @@ BEGIN
     IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END;
     IF proc = 41 (*INC*) THEN Emitter.IncDecVar(x, n, FALSE)
     ELSIF proc = 42 (*DEC*) THEN Emitter.IncDecVar(x, n, TRUE)
+    ELSIF proc = 43 (*INCL*) THEN Emitter.InclExclVar(x, n, FALSE)
+    ELSIF proc = 44 (*EXCL*) THEN Emitter.InclExclVar(x, n, TRUE)
     END
   ELSE S.Mark(E.expLparen)
   END
@@ -297,6 +321,7 @@ END ActualParams;
    FALSE | TRUE | "(" Expr ")" | "~" Factor. *)
 PROCEDURE Factor(VAR x: Emitter.Item);
 VAR obj: ST.Object;
+  y, z: Emitter.Item;
 BEGIN
   IF sym = S.lparen THEN
     S.Get(sym);
@@ -304,6 +329,9 @@ BEGIN
     IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END
   ELSIF sym = S.int THEN
     Emitter.MakeConstItem(x, ST.intType, S.ival);
+    S.Get(sym)
+  ELSIF sym = S.real THEN
+    Emitter.MakeConstItem(x, ST.realType, S.ival);
     S.Get(sym)
   ELSIF sym = S.char THEN
     Emitter.MakeConstItem(x, ST.charType, S.ival);
@@ -325,14 +353,36 @@ BEGIN
     Factor(x);
     IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
     Emitter.Not(x)
-  ELSIF sym = S.false THEN Emitter.MakeConstItem(x, ST.boolType, 0)
-  ELSIF sym = S.true THEN Emitter.MakeConstItem(x, ST.boolType, 1)
+  ELSIF sym = S.lbrace THEN
+    (* Set literal: {elem, lo..hi, ...} *)
+    Emitter.MakeConstItem(x, ST.setType, 0);
+    S.Get(sym);
+    IF sym # S.rbrace THEN
+      Expr0(y);
+      IF sym = S.upto THEN
+        S.Get(sym); Expr0(z); Emitter.SetRange(y, z)
+      ELSE
+        Emitter.Singleton(y)
+      END;
+      Emitter.SetUnion(x, y);
+      WHILE sym = S.comma DO
+        S.Get(sym);
+        Expr0(y);
+        IF sym = S.upto THEN
+          S.Get(sym); Expr0(z); Emitter.SetRange(y, z)
+        ELSE
+          Emitter.Singleton(y)
+        END;
+        Emitter.SetUnion(x, y)
+      END
+    END;
+    IF sym = S.rbrace THEN S.Get(sym) ELSE S.Mark(E.expRbrace) END
   ELSE S.Mark(E.notValue)
   END
 END Factor;
 
 (* Term = Factor [MulOperator Factor].
-   MulOperator = "*" | DIV | MOD | "&". *)
+   MulOperator = "*" | "/" | DIV | MOD | "&". *)
 PROCEDURE Term(VAR x: Emitter.Item);
 VAR op: INTEGER;
   y: Emitter.Item;
@@ -347,9 +397,22 @@ BEGIN
       Factor(y);
       IF y.type.form # ST.Bool THEN S.Mark(E.expBool) END;
       Emitter.And2(x, y)
+    ELSIF (op = S.times) & (x.type.form = ST.Set) THEN
+      Factor(y);
+      Emitter.SetInter(x, y)
+    ELSIF (op = S.rdiv) & (x.type.form = ST.Set) THEN
+      Factor(y);
+      Emitter.SetSymDiff(x, y)
+    ELSIF x.type.form = ST.Real THEN
+      Factor(y);
+      IF y.type.form # ST.Real THEN S.Mark(E.incompatible) END;
+      IF (op = S.times) OR (op = S.rdiv) THEN
+        Emitter.FMulOp(op, x, y)
+      ELSE S.Mark(E.incompatible)
+      END
     ELSE (* sym = one of mul, div, mod *)
       Factor(y);
-      IF x.type.form = ST.Int THEN
+      IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) THEN
         CheckInt(y);
         Emitter.MulOp(op, x, y)
       ELSE S.Mark(E.incompatible)
@@ -370,7 +433,12 @@ BEGIN
     IF sym = S.plus THEN S.Get(sym) END
   END;
   Term(x);
-  IF minus THEN Emitter.Neg(x) END;
+  IF minus THEN
+    IF x.type.form = ST.Set THEN Emitter.SetComplement(x)
+    ELSIF x.type.form = ST.Real THEN Emitter.FNegVal(x)
+    ELSE Emitter.Neg(x)
+    END
+  END;
   WHILE (S.plus <= sym) & (sym <= S.or) DO
     op := sym;
     S.Get(sym);
@@ -380,9 +448,18 @@ BEGIN
       Term(y);
       IF y.type.form # ST.Bool THEN S.Mark(E.expBool) END;
       Emitter.Or2(x, y)
+    ELSIF x.type.form = ST.Set THEN
+      Term(y);
+      IF op = S.plus THEN Emitter.SetUnion(x, y)
+      ELSE Emitter.SetDiff(x, y)
+      END
+    ELSIF x.type.form = ST.Real THEN
+      Term(y);
+      IF y.type.form # ST.Real THEN S.Mark(E.incompatible) END;
+      Emitter.FAddOp(op, x, y)
     ELSE (* sym = plus or minus *)
       Term(y);
-      IF x.type.form = ST.Int THEN
+      IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) THEN
         CheckInt(y);
         Emitter.AddOp(op, x, y)
       ELSE S.Mark(E.incompatible)
@@ -397,12 +474,21 @@ VAR op: INTEGER;
   y: Emitter.Item;
 BEGIN
   SimpleExpr(x);
-  IF (S.eql <= sym) & (sym <= S.geq) THEN
+  IF sym = S.in THEN
     op := sym;
     S.Get(sym);
     SimpleExpr(y);
-    IF (x.type.form IN {ST.Char, ST.Int}) & (x.type = y.type) THEN
+    Emitter.InSet(x, y);
+    x.type := ST.boolType
+  ELSIF (S.eql <= sym) & (sym <= S.geq) THEN
+    op := sym;
+    S.Get(sym);
+    SimpleExpr(y);
+    IF (x.type.form IN {ST.Char, ST.Int, ST.Set, ST.Byte}) & ST.TypesCompatible(x.type, y.type) THEN
       Emitter.IntRel(op, x, y);
+      x.type := ST.boolType
+    ELSIF (x.type.form = ST.Real) & (y.type.form = ST.Real) THEN
+      Emitter.FRel(op, x, y);
       x.type := ST.boolType
     ELSIF x.type.form = ST.Bool THEN
       IF op <= S.neq THEN Emitter.IntRel(op, x, y)
@@ -453,8 +539,6 @@ BEGIN
   S.Get(sym);
   Expr(x);
   IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
-
-  (* CONDITIONAL JUMP *)
   Emitter.CFJump(x);
 
   IF sym = S.then THEN S.Get(sym) ELSE S.Mark(E.expThen) END;
@@ -463,41 +547,28 @@ BEGIN
   L := 0;
   WHILE sym = S.elsif DO
     S.Get(sym);
-
-    (* UNCONDITIONAL JUMP *)
     Emitter.FJump(L);
-
-    (* FIXUP CONDITIONAL JUMP *)
     Emitter.Fixup(x);
 
     Expr(x);
     IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
-    IF sym = S.then THEN S.Get(sym) ELSE S.Mark(E.expThen) END;
-
-    (* CONDITIONAL JUMP *)
     Emitter.CFJump(x);
+  
+    IF sym = S.then THEN S.Get(sym) ELSE S.Mark(E.expThen) END;
 
     StatSeq0
   END;
 
   IF sym = S.else THEN
     S.Get(sym);
-
-    (* UNCONDITIONAL JUMP *)
     Emitter.FJump(L);
-
-    (* FIXUP CONDITIONAL JUMP *)
     Emitter.Fixup(x);
-
     StatSeq0
   ELSE
-    (* FIXUP CONDITIONAL JUMP *)
     Emitter.Fixup(x)
   END;
 
   IF sym = S.end THEN S.Get(sym) ELSE S.Mark(E.expEnd) END;
-
-  (* FIXUP UNCONDITIONAL JUMP *)
   Emitter.FixLink(L)
 END IfStatement;
 

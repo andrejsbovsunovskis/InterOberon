@@ -73,10 +73,20 @@ VAR op, q, addr: INTEGER;
 BEGIN
   IF x.mode # Reg THEN
     IF x.mode = ST.Const THEN
-      G.MovImm(RH, x.a)
+      IF x.type.form = ST.Real THEN
+        G.MovImm(RH, x.a);
+        G.FMovWtoS(RH, RH)
+      ELSE
+        G.MovImm(RH, x.a)
+      END
     ELSIF x.mode = ST.Var THEN
-      G.Adrp(RH, 2); (* ADRP RH, 2 *)
-      G.LdrImm(RH, RH, x.a, x.type.size); (* LDR* {RH}, [x{RH}, #{x.a}] *)
+      IF x.type.form = ST.Real THEN
+        G.Adrp(RH, 2);
+        G.FLdrImm(RH, RH, x.a)
+      ELSE
+        G.Adrp(RH, 2); (* ADRP RH, 2 *)
+        G.LdrImm(RH, RH, x.a, x.type.size) (* LDR* {RH}, [x{RH}, #{x.a}] *)
+      END;
       cmpNeeded := TRUE
     END;
     x.mode := Reg;
@@ -147,6 +157,186 @@ BEGIN
     G.AndImm1(x.r, x.r)
   END
 END OddVal;
+
+(** Arithmetic shift right. x := ASR(x, y) *)
+PROCEDURE AsrVal*(VAR x, y: Item);
+BEGIN
+  IF (x.mode = ST.Const) & (y.mode = ST.Const) THEN
+    x.a := ASR(x.a, y.a)
+  ELSE
+    Load(x); Load(y);
+    G.Asr(x.r, x.r, y.r);
+    DEC(RH)
+  END
+END AsrVal;
+
+(** Logical shift left. x := LSL(x, y) *)
+PROCEDURE LslVal*(VAR x, y: Item);
+BEGIN
+  IF (x.mode = ST.Const) & (y.mode = ST.Const) THEN
+    x.a := LSL(x.a, y.a)
+  ELSE
+    Load(x); Load(y);
+    G.Lsl(x.r, x.r, y.r);
+    DEC(RH)
+  END
+END LslVal;
+
+(** Rotate right. x := ROR(x, y) *)
+PROCEDURE RorVal*(VAR x, y: Item);
+BEGIN
+  IF (x.mode = ST.Const) & (y.mode = ST.Const) THEN
+    x.a := ROR(x.a, y.a)
+  ELSE
+    Load(x); Load(y);
+    G.Ror(x.r, x.r, y.r);
+    DEC(RH)
+  END
+END RorVal;
+
+(** FLOOR: REAL → INTEGER. Truncates toward zero. *)
+PROCEDURE Floor*(VAR x: Item);
+BEGIN
+  Load(x);
+  G.Fcvtzs(x.r, x.r);
+  x.type := ST.intType
+END Floor;
+
+(** FLT: INTEGER → REAL. *)
+PROCEDURE Flt*(VAR x: Item);
+BEGIN
+  Load(x);
+  G.Scvtf(x.r, x.r);
+  x.type := ST.realType
+END Flt;
+
+(** Set Operations **)
+
+(** Constructs a singleton set {x} = 1 << x. Converts x from Int to Set. *)
+PROCEDURE Singleton*(VAR x: Item);
+BEGIN
+  IF x.mode = ST.Const THEN
+    x.a := LSL(1, x.a)
+  ELSE
+    Load(x);
+    G.MovImm(RH, 1);
+    G.Lsl(x.r, RH, x.r)
+  END;
+  x.type := ST.setType
+END Singleton;
+
+(** Constructs a range set {x..y}. Result in x. *)
+PROCEDURE SetRange*(VAR x, y: Item);
+VAR mask: INTEGER;
+BEGIN
+  IF (x.mode = ST.Const) & (y.mode = ST.Const) THEN
+    (* Build bit range from x.a to y.a *)
+    IF y.a < 31 THEN mask := LSL(2, y.a) - 1
+    ELSE mask := -1
+    END;
+    x.a := mask - (LSL(1, x.a) - 1)
+  ELSE
+    (* runtime: result = (-1 << x) AND ((2 << y) - 1)
+       = ~0 << x AND (2 << y - 1) *)
+    Load(x); Load(y);
+    (* RH-2 = x (lo), RH-1 = y (hi) *)
+    (* rd = ~0 << lo *)
+    G.Mvn(RH, G.SP (* xzr = 0, so MVN gives -1 *));
+    G.Lsl(x.r, RH, x.r);
+    (* rd2 = (2 << hi) - 1 *)
+    G.MovImm(RH, 2);
+    G.Lsl(y.r, RH, y.r);
+    G.AddImm(y.r, y.r, -1);
+    (* result = lo_mask AND hi_mask *)
+    G.And(x.r, x.r, y.r);
+    DEC(RH)
+  END;
+  x.type := ST.setType
+END SetRange;
+
+(** Set union. x := x + y (bitwise OR) *)
+PROCEDURE SetUnion*(VAR x, y: Item);
+BEGIN
+  Load(x); Load(y);
+  G.Orr(x.r, x.r, y.r);
+  DEC(RH)
+END SetUnion;
+
+(** Set difference. x := x - y (bitwise AND NOT) *)
+PROCEDURE SetDiff*(VAR x, y: Item);
+BEGIN
+  Load(x); Load(y);
+  G.Bic(x.r, x.r, y.r);
+  DEC(RH)
+END SetDiff;
+
+(** Set intersection. x := x * y (bitwise AND) *)
+PROCEDURE SetInter*(VAR x, y: Item);
+BEGIN
+  Load(x); Load(y);
+  G.And(x.r, x.r, y.r);
+  DEC(RH)
+END SetInter;
+
+(** Set symmetric difference. x := x / y (bitwise XOR) *)
+PROCEDURE SetSymDiff*(VAR x, y: Item);
+BEGIN
+  Load(x); Load(y);
+  G.Eor(x.r, x.r, y.r);
+  DEC(RH)
+END SetSymDiff;
+
+(** Set complement. x := -x (bitwise NOT) *)
+PROCEDURE SetComplement*(VAR x: Item);
+BEGIN
+  Load(x);
+  G.Mvn(x.r, x.r)
+END SetComplement;
+
+(** Set membership test. x IN y → Bool result.
+    Tests if bit x is set in y. *)
+PROCEDURE InSet*(VAR x, y: Item);
+BEGIN
+  Load(x); Load(y);
+  (* mask = 1 << x *)
+  G.MovImm(RH, 1);
+  G.Lsl(x.r, RH, x.r);
+  (* TST y, mask *)
+  G.Tst(y.r, x.r);
+  DEC(RH, 2);
+  x.mode := Cond;
+  x.r := NE; (* NE = bit was set *)
+  x.a := 0; x.b := 0;
+  x.type := ST.boolType
+END InSet;
+
+(** INCL/EXCL. s := s + {x} or s := s - {x}. excl=TRUE means EXCL. *)
+PROCEDURE InclExclVar*(VAR s, x: Item; excl: BOOLEAN);
+VAR addr, size: INTEGER;
+BEGIN
+  IF s.mode # ST.Var THEN S.Mark(E.badVarPar)
+  ELSE
+    addr := s.a; size := s.type.size;
+    Load(s);
+    IF x.mode = ST.Const THEN
+      G.MovImm(RH, LSL(1, x.a));
+      IF excl THEN G.Bic(s.r, s.r, RH)
+      ELSE G.Orr(s.r, s.r, RH)
+      END
+    ELSE
+      Load(x);
+      G.MovImm(RH, 1);
+      G.Lsl(x.r, RH, x.r);
+      IF excl THEN G.Bic(s.r, s.r, x.r)
+      ELSE G.Orr(s.r, s.r, x.r)
+      END;
+      DEC(RH)
+    END;
+    G.Adrp(RH, 2);
+    G.StrImm(s.r, RH, addr, size);
+    DEC(RH)
+  END
+END InclExclVar;
 
 (** INC/DEC. obj := obj +/- n. sub=TRUE means DEC. *)
 PROCEDURE IncDecVar*(VAR obj, n: Item; sub: BOOLEAN);
@@ -227,6 +417,39 @@ BEGIN
     DEC(RH)
   END
 END AddOp;
+
+(** Floating-point operations **)
+
+(** Float negation. x := -x *)
+PROCEDURE FNegVal*(VAR x: Item);
+BEGIN
+  Load(x);
+  G.FNeg(x.r, x.r)
+END FNegVal;
+
+(** Float addition or subtraction. x := x op y *)
+PROCEDURE FAddOp*(op: INTEGER; VAR x, y: Item);
+BEGIN
+  Load(x); Load(y);
+  IF op = S.plus THEN
+    G.FAdd(x.r, x.r, y.r)
+  ELSE
+    G.FSub(x.r, x.r, y.r)
+  END;
+  DEC(RH)
+END FAddOp;
+
+(** Float multiplication or division. x := x op y *)
+PROCEDURE FMulOp*(op: INTEGER; VAR x, y: Item);
+BEGIN
+  Load(x); Load(y);
+  IF op = S.times THEN
+    G.FMul(x.r, x.r, y.r)
+  ELSE
+    G.FDiv(x.r, x.r, y.r)
+  END;
+  DEC(RH)
+END FMulOp;
 
 PROCEDURE Negated(code: INTEGER): INTEGER;
 BEGIN
@@ -324,7 +547,7 @@ END SetCond;
 
 PROCEDURE IntRel*(op: INTEGER; VAR x, y: Item);
 BEGIN
-  IF y.mode = ST.Const THEN
+  IF (y.mode = ST.Const) & (y.a >= 0) & (y.a < 1000H) THEN
     Load(x);
     IF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
     G.CmpImm(x.r, y.a);
@@ -340,6 +563,15 @@ BEGIN
   SetCond(x, RelCond(op))
 END IntRel;
 
+(** Float comparison. x rel y → Bool result *)
+PROCEDURE FRel*(op: INTEGER; VAR x, y: Item);
+BEGIN
+  Load(x); Load(y);
+  G.FCmp(x.r, y.r);
+  DEC(RH, 2);
+  SetCond(x, RelCond(op))
+END FRel;
+
 PROCEDURE Assign*(VAR x, y: Item);
 VAR size, q: INTEGER;
 BEGIN
@@ -349,31 +581,26 @@ BEGIN
     S.Mark(E.assignConst(*?*))
   ELSE (* x -- Var, y -- Const, Var or Reg *)
     Load(y); (* x -- Var, y -- Reg *)
-    G.Adrp(RH, 2); (* ADRP RH, 2 *)
-    G.StrImm(y.r, RH, x.a, x.type.size); (* STR* w{y.r}, [x{RH}, #{x.a}] *)
+    IF x.type.form = ST.Real THEN
+      G.Adrp(RH, 2);
+      G.FStrImm(y.r, RH, x.a)
+    ELSE
+      G.Adrp(RH, 2); (* ADRP RH, 2 *)
+      G.StrImm(y.r, RH, x.a, x.type.size) (* STR* w{y.r}, [x{RH}, #{x.a}] *)
+    END;
     DEC(RH)
   END
 END Assign;
 
 (** Jumps *)
 
-PROCEDURE NextL(VAR L: INTEGER);
-VAR instr, imm19: INTEGER;
-BEGIN
-  (* L = byte offset of a B.cond whose imm19 encodes byte offset of prev element *)
-  instr := G.ReadWord(L);
-  imm19 := (instr DIV 20H) MOD 80000H;
-  IF imm19 >= 40000H THEN DEC(imm19, 80000H) END; (* sign-extend 19 bits *)
-  L := imm19 * 4
-END NextL;
-
 PROCEDURE FixLinkWith(L, target: INTEGER);
-VAR prevL: INTEGER;
+VAR nextL: INTEGER;
 BEGIN
   WHILE L # 0 DO
-    prevL := L;
-    NextL(L);
-    G.PatchBCond(prevL, target)
+    nextL := G.ImmFromBCond(L);
+    G.PatchBCond(L, target);
+    L := nextL
   END
 END FixLinkWith;
 
@@ -392,18 +619,20 @@ BEGIN
   (* Emit B.cond(Negated(x.r)), chain x.a false-list; fix x.b true-list to here *)
   FixLink(x.b);
   x.b := 0; (* Required because of And1 *)
-  x.a := G.BCond(Negated(x.r), x.a)
+  G.BCond(Negated(x.r), x.a);
+  x.a := G.Here() - 1
 END CFJump;
 
 PROCEDURE FJump*(VAR L: INTEGER);
 BEGIN
   (* Emit B.cond(AL) — always taken; chain previous L *)
-  L := G.BCond(14 (* AL *), L)
+  G.BCond(14 (* AL *), L);
+  L := G.Here() - 1
 END FJump;
 
 PROCEDURE BJump*(L: INTEGER);
 BEGIN
-  G.B((L - G.Here()) DIV 4)
+  G.B(L - G.Here())
 END BJump;
 
 PROCEDURE CBJump*(VAR x: Item; L: INTEGER);
@@ -412,7 +641,7 @@ BEGIN
   LoadCond(x);
   here := G.Here();
   (* Emit B.cond(Negated(x.r)) backward to L — loop while condition FALSE *)
-  G.BCondReal(Negated(x.r), (L - here) DIV 4);
+  G.BCond(Negated(x.r), L - here);
   (* x.b = true-list: condition TRUE elsewhere → exit → land after this instr *)
   FixLink(x.b);
   (* x.a = false-list: condition FALSE elsewhere → also loop back to L *)
@@ -426,11 +655,11 @@ BEGIN
   ELSIF L2 # 0 THEN
     (* Walk to tail of L1 (element with imm19 = 0) *)
     L := L1;
-    REPEAT prevL := L; NextL(L) UNTIL L = 0;
+    REPEAT prevL := L; L := G.ImmFromBCond(L) UNTIL L = 0;
     (* Splice: make tail of L1 point to head of L2 *)
     instr := G.ReadWord(prevL);
     cond  := instr MOD 10H;
-    G.WriteWord(prevL, 54000000H + (L2 DIV 4 MOD 80000H) * 20H + cond)
+    G.WriteWord(prevL, 54000000H + (L2 MOD 80000H) * 20H + cond)
   END
 RETURN L1 END MergeLists;
 
@@ -456,7 +685,8 @@ BEGIN
   (* Emit B.cond(x.r): if TRUE jump forward → true-list; chain x.b *)
   FixLink(x.a);
   x.a := 0;
-  x.b := G.BCond(x.r, x.b)
+  G.BCond(x.r, x.b);
+  x.b := G.Here() - 1
 END Or1;
 
 (** x := x OR y *)
@@ -511,7 +741,8 @@ BEGIN
 
     (* IF i < 0 THEN print '-'; i := -i END *)
     G.CmpImm(9, 0);           (* CMP x9, #0 *)
-    skipNeg := G.BCond(10 (* GE *), 0);  (* B.GE skipNeg — skip if i >= 0 *)
+    skipNeg := G.Here();
+    G.BCond(10 (* GE *), 0);  (* B.GE skipNeg — skip if i >= 0 *)
 
     G.MovImm(11, 2DH);        (* w11 := '-' *)
     G.StrImm(11, SP, 0, 1);   (* STRB w11, [sp, #0] *)
@@ -532,16 +763,18 @@ BEGIN
     G.MovImm(11, 10);         (* x11 := 10 *)
     G.Div(12, 9, 11);         (* x12 := x9 DIV 10 *)
     G.Cmp(10, 12);            (* CMP x10, x12 *)
-    exitLoop1 := G.BCond(12 (* GT *), 0);  (* B.GT exitLoop1 *)
+    exitLoop1 := G.Here();
+    G.BCond(12 (* GT *), 0);  (* B.GT exitLoop1 *)
     G.MovImm(11, 10);         (* x11 := 10 *)
     G.Mul(10, 10, 11);        (* x10 := x10 * 10 *)
-    G.B((loop1 - G.Here()) DIV 4);  (* B loop1 *)
+    G.B(loop1 - G.Here());  (* B loop1 *)
     FixLink(exitLoop1);       (* exitLoop1: *)
 
     (* WHILE x # 0 DO Out.Char(CHR(i DIV x MOD 10 + 30H)); x := x DIV 10 END *)
     loop2 := G.Here();
     G.CmpImm(10, 0);          (* CMP x10, #0 *)
-    exitLoop2 := G.BCond(0 (* EQ *), 0);  (* B.EQ exitLoop2 *)
+    exitLoop2 := G.Here();
+    G.BCond(0 (* EQ *), 0);   (* B.EQ exitLoop2 *)
 
     G.Div(11, 9, 10);         (* x11 := x9 DIV x10 *)
     G.MovImm(12, 10);         (* x12 := 10 *)
@@ -558,7 +791,7 @@ BEGIN
 
     G.MovImm(12, 10);         (* x12 := 10 *)
     G.Div(10, 10, 12);        (* x10 := x10 DIV 10 *)
-    G.B((loop2 - G.Here()) DIV 4);  (* B loop2 *)
+    G.B(loop2 - G.Here());  (* B loop2 *)
     FixLink(exitLoop2);       (* exitLoop2: *)
 
     G.AddImm(SP, SP, 16)      (* sp := sp + 16 *)
