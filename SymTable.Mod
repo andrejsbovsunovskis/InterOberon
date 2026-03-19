@@ -24,6 +24,7 @@ CONST
   ShortInt* = 11;
   LongInt*  = 12;
   LongSet*  = 13;
+  Array*    = 14;
 
 TYPE
   Object* = POINTER TO ObjectDesc;
@@ -53,8 +54,7 @@ TYPE
   END;
 
   TypeDesc* = RECORD
-    form*: INTEGER;
-    nofpars*: INTEGER;
+    form*: INTEGER;    len*: INTEGER; (** Array length; nofpars for Proc **)    nofpars*: INTEGER;
     dsc*: Object;
     base*: Type;
     size*: INTEGER (** In bytes *)
@@ -267,6 +267,13 @@ BEGIN
   L.FindUniObj('LONGSET', s); SetName(U.names, s);
   U.class := Typ;
   U.type := longSetType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('LEN', s); SetName(U.names, s);
+  U.class := SFunc;
+  U.val := 40;
+  U.type := intType;
 
   U.next := dummy
 END InitUniverse;

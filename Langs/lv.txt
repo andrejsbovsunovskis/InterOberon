@@ -23,6 +23,7 @@ TO=LIDZ
 BY=PA
 CASE=GADIJUMS
 OF=NO
+ARRAY=MASĪVS
 
 [universe]
 CHAR=LITERA
@@ -47,6 +48,7 @@ FLT=PLUD
 SHORTINT=ISAISVES
 LONGINT=GARAISVES
 LONGSET=GARAKOPA
+LEN=GAR
 
 [Out]
 =Izvade
@@ -98,6 +100,11 @@ Int=Veselais
 91=Nav iespējams noteikt valodu
 110=Rinda ir pārāk gara
 111=Veselskaitļu pārpilde
+122=Tiek gaidīts [
+123=Tiek gaidīts ]
+124=Šis nav masīvs
+125=Indekss ārpus robežām
+127=Tiek gaidīts constants izteiksme
 112=Reģistru steka pārpilde
 113=Atmiņas trūkums
 114=Nezināms atslēgas vārds (kļūda valodas datnē))

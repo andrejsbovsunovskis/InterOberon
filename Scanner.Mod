@@ -18,6 +18,8 @@ CONST
   leq*       = 12; (** <=  *)
   gtr*       = 13; (** >   *)
   geq*       = 14; (** >=  *)
+  lbrak*     = 15; (** [   *)
+  rbrak*     = 16; (** ]   *)
   period*    = 18; (** .   *)
   upto*      = 19; (** ..  *)
   char*      = 20;
@@ -53,6 +55,7 @@ CONST
   elsif*     = 56;
   until*     = 57;
 (*const*     = 63;*)
+  array*     = 64;
   var*       = 65; (** VAR *)
   begin*     = 67;
   import*    = 68;
@@ -309,6 +312,8 @@ BEGIN
     ELSIF ch = ')' THEN sym := rparen; Read
     ELSIF ch = '&' THEN sym := and; Read
     ELSIF ch = '~' THEN sym := not; Read
+    ELSIF ch = '[' THEN sym := lbrak; Read
+    ELSIF ch = ']' THEN sym := rbrak; Read
     ELSIF ch = '{' THEN sym := lbrace; Read
     ELSIF ch = '}' THEN sym := rbrace; Read
     ELSIF ch = '|' THEN sym := bar; Read
@@ -418,6 +423,7 @@ BEGIN
       ELSIF kw = 'BY'     THEN sym := by
       ELSIF kw = 'CASE'   THEN sym := case
       ELSIF kw = 'OF'     THEN sym := of
+      ELSIF kw = 'ARRAY'  THEN sym := array
       ELSE Mark(E.unknownKW)
       END
     ELSE sym := null; Read

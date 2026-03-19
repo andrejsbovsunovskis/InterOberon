@@ -23,6 +23,7 @@ TO=TO
 BY=BY
 CASE=CASE
 OF=OF
+ARRAY=ARRAY
 
 [universe]
 CHAR=CHAR
@@ -47,6 +48,7 @@ FLT=FLT
 SHORTINT=SHORTINT
 LONGINT=LONGINT
 LONGSET=LONGSET
+LEN=LEN
 
 [Out]
 =Out
@@ -98,6 +100,11 @@ Int=Int
 91=Failed to identify the language
 110=String too long
 111=Integer range overflow
+122=[ expected
+123=] expected
+124=This is not an array
+125=Index out of bounds
+127=Constant expression expected
 112=Register stack overflow
 113=Out of memory
 114=Unknown key word (error in the language file)

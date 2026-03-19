@@ -5,7 +5,7 @@ identifikators = burts {burts | cipars}.
 kvalident = [identifikators "."] identifikators.
 veselais = cipars {cipars}.
 simboluVirkne = ' " ' litera ' " ' | " ' " litera " ' ".
-tips = kvalident.
+tips = kvalident | MASĪVS izteiksme NO tips.
 identSaraksts = identifikators {"," identifikators}.
 mainīgoDeklarēšana = identSaraksts ":" tips.
 izteiksme = vienkāršāIzteiksme [attiecība vienkāršāIzteiksme].
@@ -15,8 +15,9 @@ saskOperācija = "+" | "-" | VAI.
 saskaitāmais = reizinātāis {reizinOperācija reizinātāis}.
 reizinOperācija = "*" | DAL | ATL | "&".
 reizinātāis = veselais | simboluVirkne | PATIESS | APLAMS |
-              kvalident [FaktiskieParameteri] |
+              kvalident selektors [FaktiskieParameteri] |
               "(" izteiksme ")" | "~" reizinātāis.
+selektors = {"[" izteiksme "]"}.
 IzteiksmesSaraksts = izteiksme {"," izteiksme}.
 FaktiskieParameteri = "(" [IzteiksmesSaraksts] ")".
 operators = [piešķiršana | ProcedūrasIzsaukšana | JaOperators |

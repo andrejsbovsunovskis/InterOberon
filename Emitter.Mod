@@ -7,6 +7,7 @@ CONST
   (** Values of Item.mode **)
   (** Some of Object Classes from SymTable are also valid *)
   Reg*  = 10;
+  RegI* = 11; (** Register indirect: address in register r *)
   Cond* = 12; (** Condition expression result *)
 
   SP = G.SP;
@@ -27,6 +28,7 @@ TYPE
         |  Reg  |     -     |     -     | register No |
         | Const |   value   |     -     |      -      |
         |  Var  |  address  |     -     |      -      |
+        | RegI  |     -     |     -     | register No |
         | Cond  |    false/true List?   |  cond code  |
   *)
   Item* = RECORD
@@ -78,7 +80,17 @@ BEGIN
         G.FMovWtoS(RH, RH)
       ELSE
         G.MovImm(RH, x.a)
-      END
+      END;
+      x.r := RH;
+      IncR
+    ELSIF x.mode = RegI THEN
+      IF x.type.form = ST.Real THEN
+        G.FLdrImm(x.r, x.r, 0)
+      ELSE
+        G.LdrImm(x.r, x.r, 0, x.type.size);
+        IF x.type.form = ST.ShortInt THEN G.Sxth(x.r, x.r) END
+      END;
+      cmpNeeded := TRUE
     ELSIF x.mode = ST.Var THEN
       IF x.type.form = ST.Real THEN
         G.Adrp(RH, 2);
@@ -88,11 +100,11 @@ BEGIN
         G.LdrImm(RH, RH, x.a, x.type.size); (* LDR* {RH}, [x{RH}, #{x.a}] *)
         IF x.type.form = ST.ShortInt THEN G.Sxth(RH, RH) END
       END;
-      cmpNeeded := TRUE
+      cmpNeeded := TRUE;
+      x.r := RH;
+      IncR
     END;
-    x.mode := Reg;
-    x.r := RH;
-    IncR
+    x.mode := Reg
   END
 END Load;
 
@@ -342,10 +354,28 @@ END InclExclVar;
 
 (** INC/DEC. obj := obj +/- n. sub=TRUE means DEC. *)
 PROCEDURE IncDecVar*(VAR obj, n: Item; sub: BOOLEAN);
-VAR addr, size: INTEGER;
+VAR addr, size, addrReg: INTEGER;
 BEGIN
-  IF obj.mode # ST.Var THEN S.Mark(E.badVarPar)
-  ELSE
+  IF obj.mode = RegI THEN
+    addrReg := obj.r; size := obj.type.size;
+    G.LdrImm(RH, addrReg, 0, size);
+    obj.r := RH;
+    obj.mode := Reg;
+    IncR;
+    IF n.mode = ST.Const THEN
+      IF sub THEN G.AddImm(obj.r, obj.r, -n.a)
+      ELSE G.AddImm(obj.r, obj.r, n.a)
+      END
+    ELSE
+      Load(n);
+      IF sub THEN G.Sub(obj.r, obj.r, n.r)
+      ELSE G.Add(obj.r, obj.r, n.r)
+      END;
+      DEC(RH)
+    END;
+    G.StrImm(obj.r, addrReg, 0, size);
+    DEC(RH, 2)
+  ELSIF obj.mode = ST.Var THEN
     addr := obj.a; size := obj.type.size;
     Load(obj);
     IF n.mode = ST.Const THEN
@@ -362,6 +392,7 @@ BEGIN
     G.Adrp(RH, 2);
     G.StrImm(obj.r, RH, addr, size);
     DEC(RH)
+  ELSE S.Mark(E.badVarPar)
   END
 END IncDecVar;
 
@@ -411,10 +442,15 @@ BEGIN
     x := y
   ELSE
     Load(x); Load(y); (* x -- Reg, y -- Reg *)
-    IF op = S.plus THEN
-      G.Add(x.r, x.r, y.r)
-    ELSE (* op = S.minus *)
-      G.Sub(x.r, x.r, y.r)
+    IF x.r > y.r THEN
+      IF op = S.plus THEN G.Add(y.r, x.r, y.r)
+      ELSE G.Sub(y.r, x.r, y.r)
+      END;
+      x.r := y.r
+    ELSE
+      IF op = S.plus THEN G.Add(x.r, x.r, y.r)
+      ELSE G.Sub(x.r, x.r, y.r)
+      END
     END;
     DEC(RH)
   END
@@ -529,13 +565,17 @@ BEGIN
     x := y
   ELSE
     Load(x); Load(y); (* x -- Reg, y -- Reg *)
-    IF op = S.times THEN
-      G.Mul(x.r, x.r, y.r)
-    ELSIF op = S.div THEN
-      G.Div(x.r, x.r, y.r)
-    ELSE (* op = S.mod: RH = quotient scratch *)
-      G.Div(RH, x.r, y.r);
-      G.Msub(x.r, RH, y.r, x.r)
+    IF x.r > y.r THEN
+      IF op = S.times THEN G.Mul(y.r, x.r, y.r)
+      ELSIF op = S.div THEN G.Div(y.r, x.r, y.r)
+      ELSE G.Div(RH, x.r, y.r); G.Msub(y.r, RH, y.r, x.r)
+      END;
+      x.r := y.r
+    ELSE
+      IF op = S.times THEN G.Mul(x.r, x.r, y.r)
+      ELSIF op = S.div THEN G.Div(x.r, x.r, y.r)
+      ELSE G.Div(RH, x.r, y.r); G.Msub(x.r, RH, y.r, x.r)
+      END
     END;
     DEC(RH)
   END
@@ -582,9 +622,15 @@ VAR size, q: INTEGER;
 BEGIN
   IF ~ST.TypesCompatible(x.type, y.type) THEN
     S.Mark(E.incompatible)
-  ELSIF x.mode # ST.Var THEN
-    S.Mark(E.assignConst(*?*))
-  ELSE (* x -- Var, y -- Const, Var or Reg *)
+  ELSIF x.mode = RegI THEN
+    Load(y);
+    IF x.type.form = ST.Real THEN
+      G.FStrImm(y.r, x.r, 0)
+    ELSE
+      G.StrImm(y.r, x.r, 0, x.type.size)
+    END;
+    DEC(RH, 2)
+  ELSIF x.mode = ST.Var THEN
     Load(y); (* x -- Var, y -- Reg *)
     IF x.type.form = ST.Real THEN
       G.Adrp(RH, 2);
@@ -594,8 +640,39 @@ BEGIN
       G.StrImm(y.r, RH, x.a, x.type.size) (* STR* w{y.r}, [x{RH}, #{x.a}] *)
     END;
     DEC(RH)
+  ELSE
+    S.Mark(E.assignConst)
   END
 END Assign;
+
+(** Array indexing. x := x[y].
+    x is an array variable, y is the index expression.
+    Result: x.mode = RegI or Var, x.type = element type. *)
+PROCEDURE Index*(VAR x, y: Item);
+VAR elemSize: INTEGER;
+BEGIN
+  IF x.type.form # ST.Array THEN S.Mark(E.notArray)
+  ELSE
+    elemSize := x.type.base.size;
+    IF (y.mode = ST.Const) & (x.mode = ST.Var) THEN
+      x.a := x.a + y.a * elemSize;
+      x.type := x.type.base
+    ELSIF x.mode = ST.Var THEN
+      Load(y);
+      IF elemSize > 1 THEN
+        G.MovImm(RH, elemSize);
+        G.Mul(y.r, y.r, RH)
+      END;
+      G.Adrp(RH, 2);
+      G.AddImm(RH, RH, x.a);
+      G.Add(y.r, RH, y.r);
+      x.mode := RegI;
+      x.type := x.type.base;
+      x.r := y.r
+    ELSE S.Mark(E.notArray)
+    END
+  END
+END Index;
 
 (** Jumps *)
 

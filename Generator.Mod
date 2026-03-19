@@ -225,6 +225,28 @@ BEGIN
   DWord(n)
 END LdrImm;
 
+(** LDR* {rt}, [x{rn}, x{rm}]
+     Register offset load. size = 1, 2, 4 or 8 bytes. *)
+PROCEDURE LdrReg*(rt, rn, rm, size: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  size := SizeToLog(size);
+  (* LDR Xt, [Xn, Xm] = size:11 | 111000 | 01 | 1 | Rm | 011 | 0 | 10 | Rn | Rt *)
+  n := (size * 40H + 38H) * 1000000H + 600000H + rm * 10000H + 6800H + rn * 20H + rt;
+  DWord(n)
+END LdrReg;
+
+(** STR* {rt}, [x{rn}, x{rm}]
+     Register offset store. size = 1, 2, 4 or 8 bytes. *)
+PROCEDURE StrReg*(rt, rn, rm, size: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  size := SizeToLog(size);
+  (* STR Xt, [Xn, Xm] = size:11 | 111000 | 00 | 1 | Rm | 011 | 0 | 10 | Rn | Rt *)
+  n := (size * 40H + 38H) * 1000000H + 200000H + rm * 10000H + 6800H + rn * 20H + rt;
+  DWord(n)
+END StrReg;
+
 (** ADD x{rd}, x{rn}, x{rm} *)
 PROCEDURE Add*(rd, rn, rm: INTEGER);
 VAR n: INTEGER;

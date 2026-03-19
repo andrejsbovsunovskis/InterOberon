@@ -66,9 +66,11 @@ BEGIN
   IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END
 END ImportList;
 
-(** Type = ident. *)
+(** Type = ident | ARRAY expr OF Type. *)
 PROCEDURE Type(VAR T: ST.Type);
 VAR p: ST.Object;
+  x: Emitter.Item;
+  elemType: ST.Type;
 BEGIN
   T := ST.intType;
   IF sym = S.ident THEN
@@ -81,6 +83,17 @@ BEGIN
       END
     ELSE S.Mark(E.undecl)
     END
+  ELSIF sym = S.array THEN
+    S.Get(sym);
+    Expr0(x);
+    IF x.mode # ST.Const THEN S.Mark(E.expConst); x.a := 1 END;
+    IF sym = S.of THEN S.Get(sym) ELSE S.Mark(E.expOf) END;
+    Type(elemType);
+    NEW(T);
+    T.form := ST.Array;
+    T.base := elemType;
+    T.len := x.a;
+    T.size := x.a * elemType.size
   ELSE S.Mark(E.expIdent)
   END
 END Type;
@@ -99,6 +112,7 @@ END CheckExport;
 PROCEDURE VarDecl(VAR firstObj: ST.Object);
 VAR p, q: ST.Object;
   T: ST.Type;
+  align: INTEGER;
 BEGIN
   (* Save pointer to the first object created below *)
   p := ST.NewObject(ST.Var, S.id);
@@ -119,8 +133,11 @@ BEGIN
   Type(T);
   REPEAT
     p.type := T;
-    IF T.size > 1 THEN
-      varsize := (varsize + T.size - 1) DIV T.size * T.size
+    IF T.form = ST.Array THEN align := T.base.size
+    ELSE align := T.size
+    END;
+    IF align > 1 THEN
+      varsize := (varsize + align - 1) DIV align * align
     END;
     p.val := varsize;
     varsize := varsize + T.size;
@@ -174,9 +191,16 @@ BEGIN
   END
 END DeclSeq;
 
-(** Selector = . *)
-PROCEDURE Selector;
+(** Selector = {"[" Expr "]"}. *)
+PROCEDURE Selector(VAR x: Emitter.Item);
+VAR y: Emitter.Item;
 BEGIN
+  WHILE sym = S.lbrak DO
+    S.Get(sym);
+    Expr0(y);
+    Emitter.Index(x, y);
+    IF sym = S.rbrak THEN S.Get(sym) ELSE S.Mark(E.expRbrak) END
+  END
 END Selector;
 
 (** QualIdent = [ident "."] ident. *)
@@ -246,6 +270,11 @@ BEGIN
     ELSIF func = 39 (*FLT*) THEN
       IF x.type.form IN {ST.Int, ST.Byte, ST.ShortInt, ST.LongInt} THEN Emitter.Flt(x)
       ELSE S.Mark(E.incompatible)
+      END
+    ELSIF func = 40 (*LEN*) THEN
+      IF x.type.form = ST.Array THEN
+        Emitter.MakeConstItem(x, ST.intType, x.type.len)
+      ELSE S.Mark(E.notArray)
       END
     ELSE ASSERT(FALSE)
     END;
@@ -340,7 +369,7 @@ BEGIN
   ELSIF sym = S.ident THEN
     QualIdent(obj);
     IF obj.class = ST.SFunc THEN StandFunc(x, obj.val, obj.type)
-    ELSE Emitter.MakeItem(x, obj)
+    ELSE Emitter.MakeItem(x, obj); Selector(x)
     END
   ELSIF sym = S.string THEN
     Emitter.MakeConstItem(x, ST.charType, ORD(S.sval[0]));
@@ -508,6 +537,14 @@ BEGIN
   Expr(y);
   Emitter.Assign(x, y)
 END Assign;
+
+(** AssignItem: assignment where left side is already an Item. *)
+PROCEDURE AssignItem(VAR x: Emitter.Item);
+VAR y: Emitter.Item;
+BEGIN
+  Expr(y);
+  Emitter.Assign(x, y)
+END AssignItem;
 
 (** ProcedureCall = Designator [ActualParams]. *)
 PROCEDURE ProcedureCall(obj: ST.Object);
@@ -765,17 +802,19 @@ END CaseStatement;
     WhileStatement | RepeatStatement ]. *)
 PROCEDURE Statement;
 VAR obj: ST.Object;
+  x: Emitter.Item;
 BEGIN
   IF sym = S.ident THEN
     QualIdent(obj);
     IF obj.class = ST.SProc THEN
       StandProc(obj.val)
     ELSE
-      Selector;
+      Emitter.MakeItem(x, obj);
+      Selector(x);
       IF sym = S.eql THEN S.Mark(E.expBecomes); sym := S.becomes END;
       IF sym = S.becomes THEN
         S.Get(sym);
-        Assign(obj)
+        AssignItem(x)
       ELSE
         ProcedureCall(obj)
       END

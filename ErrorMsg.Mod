@@ -57,6 +57,12 @@ CONST
   badTransName*      = 120;
   badHex*            = 121;
 
+  expLbrak*          = 122;
+  expRbrak*          = 123;
+  notArray*          = 124;
+  indexOutOfBounds*  = 125;
+  expConst*          = 127;
+
   (** Compiler message codes **)
   compileOk1*        = 1;
   compileOk2*        = 2;
