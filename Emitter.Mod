@@ -92,11 +92,10 @@ BEGIN
       END;
       cmpNeeded := TRUE
     ELSIF x.mode = ST.Var THEN
+      G.Adrp(RH, 2);
       IF x.type.form = ST.Real THEN
-        G.Adrp(RH, 2);
         G.FLdrImm(RH, RH, x.a)
       ELSE
-        G.Adrp(RH, 2); (* ADRP RH, 2 *)
         G.LdrImm(RH, RH, x.a, x.type.size); (* LDR* {RH}, [x{RH}, #{x.a}] *)
         IF x.type.form = ST.ShortInt THEN G.Sxth(RH, RH) END
       END;
