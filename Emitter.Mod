@@ -12,17 +12,19 @@ CONST
 
   SP = G.SP;
 
-  (** ARM64 condition codes *)
-  EQ = 0;  (** Equal          *)
-  NE = 1;  (** Not equal      *)
-  GE = 10; (** Signed >=      *)
-  LT = 11; (** Signed <       *)
-  GT = 12; (** Signed >       *)
-  LE = 13; (** Signed <=      *)
-  AL = 14; (** Always (true)  *)
-  NV = 15; (** Never  (false) *)
+  (** ARM64 condition codes **)
+  EQ = 0;  (** Equal         *)
+  NE = 1;  (** Not equal     *)
+  GE = 10; (** Signed >=     *)
+  LT = 11; (** Signed <      *)
+  GT = 12; (** Signed >      *)
+  LE = 13; (** Signed <=     *)
+  AL = 14; (** Always (true) *)
+  NV = 15; (** Never (false) *)
 
 TYPE
+  LONGINT = M.LONGINT;
+
   (** Item is a temporary object that exists during statement parsing.
         |  mode |     a     |     b     |      r      |
         |  Reg  |     -     |     -     | register No |
@@ -39,6 +41,7 @@ TYPE
 
 VAR
   RH: INTEGER; (** Number of the highest free register *)
+  caseReg: INTEGER; (** Register holding the CASE expression value *)
 
   cmpNeeded: BOOLEAN;
 
@@ -55,7 +58,11 @@ PROCEDURE MakeItem*(VAR x: Item; obj: ST.Object);
 BEGIN
   x.mode := obj.class;
   x.type := obj.type;
-  x.a := obj.val
+  IF (obj.class = ST.Const) & (obj.constVal # NIL) THEN
+    x.a := obj.constVal.intVal
+  ELSE
+    x.a := M.SHORT(obj.address)
+  END
 END MakeItem;
 
 (** Load in registers **)
@@ -69,6 +76,29 @@ BEGIN
     S.Mark(E.regOverflow)
   END
 END IncR;
+
+PROCEDURE Negated(code: INTEGER): INTEGER;
+BEGIN
+  (* ARM64 condition pairs differ only in bit 0 *)
+  IF ODD(code) THEN DEC(code) ELSE INC(code) END
+RETURN code END Negated;
+
+(** Jumps *)
+
+PROCEDURE FixLinkWith(L, target: INTEGER);
+VAR nextL: INTEGER;
+BEGIN
+  WHILE L # 0 DO
+    nextL := G.ImmFromBCond(L);
+    G.PatchBCond(L, target);
+    L := nextL
+  END
+END FixLinkWith;
+
+PROCEDURE FixLink*(L: INTEGER);
+BEGIN
+  FixLinkWith(L, G.Here())
+END FixLink;
 
 PROCEDURE Load(VAR x: Item);
 VAR op, q, addr: INTEGER;
@@ -102,6 +132,13 @@ BEGIN
       cmpNeeded := TRUE;
       x.r := RH;
       IncR
+    ELSIF x.mode = Cond THEN
+      FixLink(x.b);
+      FixLinkWith(x.a, G.Here());
+      (* CSINC Xd, xzr, xzr, Negated(x.r) = CSET Xd, x.r *)
+      G.CSInc(RH, SP, SP, Negated(x.r));
+      x.r := RH;
+      IncR
     END;
     x.mode := Reg
   END
@@ -110,7 +147,6 @@ END Load;
 PROCEDURE LoadAddr(VAR x: Item);
 BEGIN
   IF x.mode = ST.Var THEN
-    (*Put1(Add, RH, MP, x.a);*)
     x.r := RH;
     IncR
   ELSE S.Mark(E.badVarPar)
@@ -207,13 +243,36 @@ BEGIN
   END
 END RorVal;
 
-(** FLOOR: REAL → INTEGER. Truncates toward zero. *)
+(** FLOOR: REAL → INTEGER. Rounds toward minus infinity. *)
 PROCEDURE Floor*(VAR x: Item);
 BEGIN
   Load(x);
-  G.Fcvtzs(x.r, x.r);
+  G.Fcvtms(x.r, x.r);
   x.type := ST.intType
 END Floor;
+
+(** SHORT: type narrowing. Result type is set by caller. *)
+PROCEDURE Short*(VAR x: Item);
+BEGIN
+  (* Constant values are just truncated *)
+  IF x.mode # ST.Const THEN
+    Load(x);
+    IF x.type.size = 8 THEN G.Sxtw(x.r, x.r)
+    ELSIF x.type.size = 4 THEN G.Sxth(x.r, x.r)
+    END
+  END
+END Short;
+
+(** LONG: type widening. Result type is set by caller. *)
+PROCEDURE Long*(VAR x: Item);
+BEGIN
+  IF x.mode # ST.Const THEN
+    Load(x);
+    IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
+    ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r)
+    END
+  END
+END Long;
 
 (** FLT: INTEGER → REAL. *)
 PROCEDURE Flt*(VAR x: Item);
@@ -488,12 +547,6 @@ BEGIN
   DEC(RH)
 END FMulOp;
 
-PROCEDURE Negated(code: INTEGER): INTEGER;
-BEGIN
-  (* ARM64 condition pairs differ only in bit 0 *)
-  IF ODD(code) THEN DEC(code) ELSE INC(code) END
-RETURN code END Negated;
-
 (** Maps a relational operator token to the ARM64 condition code *)
 PROCEDURE RelCond(op: INTEGER): INTEGER;
 VAR code: INTEGER;
@@ -515,7 +568,20 @@ BEGIN
   t := x.a; x.a := x.b; x.b := t
 END Not;
 
-(** Multiplication or division (or MOD). x := x op y *)
+(** Returns log2(n) if n is a power of 2, or -1 otherwise. *)
+PROCEDURE Log2(n: INTEGER): INTEGER;
+VAR k: INTEGER;
+BEGIN
+  IF n <= 0 THEN k := -1
+  ELSE
+    k := 0;
+    WHILE (k < 63) & (LSL(1, k) < n) DO INC(k) END;
+    IF LSL(1, k) # n THEN k := -1 END
+  END
+RETURN k END Log2;
+
+(** Multiplication or division (or MOD). x := x op y.
+    DIV and MOD use floor division (toward -infinity). *)
 PROCEDURE MulOp*(op: INTEGER; VAR x, y: Item);
 BEGIN
   IF (x.mode = ST.Const) & (y.mode = ST.Const) THEN
@@ -533,18 +599,28 @@ BEGIN
       END
     END
   ELSIF y.mode = ST.Const THEN (* x -- Reg or Var *)
-    Load(x); (* x -- Reg; use RH as scratch for constant *)
+    Load(x); (* x -- Reg; RH and RH+1 are then used as scratch *)
     IF op = S.times THEN
       G.MovImm(RH, y.a);
       G.Mul(x.r, x.r, RH)
     ELSIF y.a <= 0 THEN S.Mark(E.badDiv)
     ELSIF op = S.div THEN
-      G.MovImm(RH, y.a);
-      G.Div(x.r, x.r, RH)
-    ELSE (* op = S.mod: RH = divisor, RH+1 = quotient *)
+      IF Log2(y.a) >= 0 THEN
+        G.AsrImm(x.r, x.r, Log2(y.a))
+      ELSE
+        G.MovImm(RH, y.a);
+        G.Mov(RH + 1, x.r);
+        G.Div(x.r, x.r, RH);
+        G.Msub(RH, x.r, RH, RH + 1);
+        G.Tbz(RH, 63, 2);
+        G.AddImm(x.r, x.r, -1)
+      END
+    ELSE (* op = S.mod *)
       G.MovImm(RH, y.a);
       G.Div(RH + 1, x.r, RH);
-      G.Msub(x.r, RH + 1, RH, x.r)
+      G.Msub(x.r, RH + 1, RH, x.r);
+      G.Tbz(x.r, 63, 2);
+      G.Add(x.r, x.r, RH)
     END
   ELSIF x.mode = ST.Const THEN (* y -- Reg or Var *)
     Load(y); (* x -- Const, y -- Reg *)
@@ -554,10 +630,17 @@ BEGIN
     ELSE
       Load(x); (* x -- Reg, y -- Reg, y.r < x.r *)
       IF op = S.div THEN
-        G.Div(y.r, x.r, y.r)
-      ELSE (* op = S.mod: RH = quotient scratch *)
+        G.Mov(RH, y.r);
+        G.Div(y.r, x.r, y.r);
+        G.Msub(RH, y.r, RH, x.r);
+        G.Tbz(RH, 63, 2);
+        G.AddImm(y.r, y.r, -1)
+      ELSE (* op = S.mod *)
+        G.Mov(RH + 1, y.r);
         G.Div(RH, x.r, y.r);
-        G.Msub(y.r, RH, y.r, x.r)
+        G.Msub(y.r, RH, y.r, x.r);
+        G.Tbz(y.r, 63, 2);
+        G.Add(y.r, y.r, RH + 1)
       END;
       DEC(RH)
     END;
@@ -566,14 +649,33 @@ BEGIN
     Load(x); Load(y); (* x -- Reg, y -- Reg *)
     IF x.r > y.r THEN
       IF op = S.times THEN G.Mul(y.r, x.r, y.r)
-      ELSIF op = S.div THEN G.Div(y.r, x.r, y.r)
-      ELSE G.Div(RH, x.r, y.r); G.Msub(y.r, RH, y.r, x.r)
+      ELSIF op = S.div THEN
+        G.Mov(RH, y.r);
+        G.Div(y.r, x.r, y.r);
+        G.Msub(RH, y.r, RH, x.r);
+        G.Tbz(RH, 63, 2);
+        G.AddImm(y.r, y.r, -1)
+      ELSE
+        G.Div(RH, x.r, y.r);
+        G.Mov(RH + 1, y.r);
+        G.Msub(y.r, RH, y.r, x.r);
+        G.Tbz(y.r, 63, 2);
+        G.Add(y.r, y.r, RH + 1)
       END;
       x.r := y.r
     ELSE
       IF op = S.times THEN G.Mul(x.r, x.r, y.r)
-      ELSIF op = S.div THEN G.Div(x.r, x.r, y.r)
-      ELSE G.Div(RH, x.r, y.r); G.Msub(x.r, RH, y.r, x.r)
+      ELSIF op = S.div THEN
+        G.Mov(RH, x.r);
+        G.Div(x.r, x.r, y.r);
+        G.Msub(RH, x.r, y.r, RH);
+        G.Tbz(RH, 63, 2);
+        G.AddImm(x.r, x.r, -1)
+      ELSE
+        G.Div(RH, x.r, y.r);
+        G.Msub(x.r, RH, y.r, x.r);
+        G.Tbz(x.r, 63, 2);
+        G.Add(x.r, x.r, y.r)
       END
     END;
     DEC(RH)
@@ -646,64 +748,77 @@ END Assign;
 
 (** Array indexing. x := x[y].
     x is an array variable, y is the index expression.
-    Result: x.mode = RegI or Var, x.type = element type. *)
+    Result: x.mode = RegI or Var (when index is a constant),
+    x.type = element type. *)
 PROCEDURE Index*(VAR x, y: Item);
-VAR elemSize: INTEGER;
+VAR elemSize, shift: INTEGER;
 BEGIN
   IF x.type.form # ST.Array THEN S.Mark(E.notArray)
   ELSE
     elemSize := x.type.base.size;
     IF (y.mode = ST.Const) & (x.mode = ST.Var) THEN
-      x.a := x.a + y.a * elemSize;
-      x.type := x.type.base
+      x.a := x.a + y.a * elemSize
+    ELSIF (y.mode = ST.Const) & (x.mode = RegI) THEN
+      IF y.a * elemSize # 0 THEN
+        G.AddImm(x.r, x.r, y.a * elemSize)
+      END
     ELSIF x.mode = ST.Var THEN
       Load(y);
-      IF elemSize > 1 THEN
-        G.MovImm(RH, elemSize);
-        G.Mul(y.r, y.r, RH)
-      END;
       G.Adrp(RH, 2);
       G.AddImm(RH, RH, x.a);
-      G.Add(y.r, RH, y.r);
-      x.mode := RegI;
-      x.type := x.type.base;
+      shift := Log2(elemSize);
+      IF shift >= 0 THEN
+        G.AddLsl(y.r, RH, y.r, shift)
+      ELSE
+        G.MovImm(RH + 1, elemSize);
+        G.Madd(y.r, y.r, RH + 1, RH)
+      END;
+      x.mode := RegI; (* x.mode was Var before this *)
       x.r := y.r
+    ELSIF x.mode = RegI THEN
+      Load(y);
+      shift := Log2(elemSize);
+      IF shift >= 0 THEN
+        G.AddLsl(x.r, x.r, y.r, shift)
+      ELSE
+        G.MovImm(RH, elemSize);
+        G.Madd(x.r, y.r, RH, x.r)
+      END;
+      DEC(RH)
     ELSE S.Mark(E.notArray)
-    END
+    END;
+    x.type := x.type.base
   END
 END Index;
-
-(** Jumps *)
-
-PROCEDURE FixLinkWith(L, target: INTEGER);
-VAR nextL: INTEGER;
-BEGIN
-  WHILE L # 0 DO
-    nextL := G.ImmFromBCond(L);
-    G.PatchBCond(L, target);
-    L := nextL
-  END
-END FixLinkWith;
-
-PROCEDURE FixLink*(L: INTEGER);
-BEGIN
-  FixLinkWith(L, G.Here())
-END FixLink;
 
 PROCEDURE Fixup*(VAR x: Item);
 BEGIN FixLink(x.a)
 END Fixup;
 
+(** Conditional forward jump. *)
 PROCEDURE CFJump*(VAR x: Item);
 BEGIN
   LoadCond(x);
-  (* Emit B.cond(Negated(x.r)), chain x.a false-list; fix x.b true-list to here *)
-  FixLink(x.b);
-  x.b := 0; (* Required because of And1 *)
-  G.BCond(Negated(x.r), x.a);
-  x.a := G.Here() - 1
+  IF x.r = AL THEN
+    (* Const TRUE: condition always true, never jump to false branch *)
+    FixLink(x.b);
+    x.b := 0
+  ELSIF x.r = NV THEN
+    (* Const FALSE: always jump to false branch *)
+    FixLink(x.b);
+    x.b := 0;
+    G.BCond(AL, x.a); (* Cannot use G.B because it would break the chain *)
+    x.a := G.Here() - 1
+  ELSE
+    (* Emit B.cond(Negated(x.r)), chain x.a false-list; fix x.b true-list to here *)
+    FixLink(x.b);
+    x.b := 0; (* Required because of And1 *)
+    G.BCond(Negated(x.r), x.a);
+    x.a := G.Here() - 1
+  END
 END CFJump;
 
+(** Forward jump. *)
 PROCEDURE FJump*(VAR L: INTEGER);
 BEGIN
   (* Emit B.cond(AL) — always taken; chain previous L *)
@@ -711,22 +826,32 @@ BEGIN
   L := G.Here() - 1
 END FJump;
 
+(** Backward jump. *)
 PROCEDURE BJump*(L: INTEGER);
 BEGIN
   G.B(L - G.Here())
 END BJump;
 
+(** Conditional backward jump. *)
 PROCEDURE CBJump*(VAR x: Item; L: INTEGER);
 VAR here: INTEGER;
 BEGIN
   LoadCond(x);
-  here := G.Here();
-  (* Emit B.cond(Negated(x.r)) backward to L — loop while condition FALSE *)
-  G.BCond(Negated(x.r), L - here);
-  (* x.b = true-list: condition TRUE elsewhere → exit → land after this instr *)
-  FixLink(x.b);
-  (* x.a = false-list: condition FALSE elsewhere → also loop back to L *)
-  FixLinkWith(x.a, L)
+  IF x.r = AL THEN
+    (* Const TRUE: condition always true, exit loop (no backward jump) *)
+    FixLink(x.b)
+  ELSIF x.r = NV THEN
+    (* Const FALSE: always loop back *)
+    G.B(L - G.Here())
+  ELSE
+    here := G.Here();
+    (* Emit B.cond(Negated(x.r)) backward to L — loop while condition FALSE *)
+    G.BCond(Negated(x.r), L - here);
+    (* x.b = true-list: condition TRUE elsewhere → exit → land after this instr *)
+    FixLink(x.b);
+    (* x.a = false-list: condition FALSE elsewhere → also loop back to L *)
+    FixLinkWith(x.a, L)
+  END
 END CBJump;
 
 PROCEDURE MergeLists(L1, L2: INTEGER): INTEGER;
@@ -763,11 +888,21 @@ END And2;
 PROCEDURE Or1*(VAR x: Item);
 BEGIN
   LoadCond(x);
-  (* Emit B.cond(x.r): if TRUE jump forward → true-list; chain x.b *)
-  FixLink(x.a);
-  x.a := 0;
-  G.BCond(x.r, x.b);
-  x.b := G.Here() - 1
+  IF x.r = AL THEN
+    (* Const TRUE OR y: result is always true, skip y *)
+    FixLink(x.a);
+    x.a := 0
+  ELSIF x.r = NV THEN
+    (* Const FALSE OR y: result depends only on y *)
+    FixLink(x.a);
+    x.a := 0
+  ELSE
+    (* Emit B.cond(x.r): if TRUE jump forward → true-list; chain x.b *)
+    FixLink(x.a);
+    x.a := 0;
+    G.BCond(x.r, x.b);
+    x.b := G.Here() - 1
+  END
 END Or1;
 
 (** x := x OR y *)
@@ -948,61 +1083,71 @@ END ForClean;
 
 (** CASE statement support **)
 
-(** Save case expression value on the stack. *)
+(** Keep case expression value in a register. *)
 PROCEDURE CaseSave*(VAR x: Item);
 BEGIN
   Load(x);
   IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
-  ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
-  G.AddImm(G.SP, G.SP, -16);
-  G.StrImm(x.r, G.SP, 0, 8);
-  DEC(RH)
+  ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r)
+  END;
+  caseReg := x.r
 END CaseSave;
 
-(** Compare saved case expression with a single value.
+(** Compare case register with a single value.
     Emits conditional jump chained into matchList when equal. *)
 PROCEDURE CaseLabel*(val: INTEGER; VAR matchList: INTEGER);
 BEGIN
-  G.LdrImm(RH, G.SP, 0, 8);
   IF (val >= 0) & (val < 1000H) THEN
-    G.CmpImm(RH, val)
+    G.CmpImm(caseReg, val)
   ELSE
-    G.MovImm(RH + 1, val);
-    G.Cmp(RH, RH + 1)
+    G.MovImm(RH, val);
+    G.Cmp(caseReg, RH)
   END;
   G.BCond(EQ, matchList);
   matchList := G.Here() - 1
 END CaseLabel;
 
-(** Compare saved case expression with a range [lo..hi].
+(** Compare case register with a range [lo..hi].
     Emits conditional jump chained into matchList when in range. *)
 PROCEDURE CaseRangeLabel*(lo, hi: INTEGER; VAR matchList: INTEGER);
 VAR skipPos: INTEGER;
 BEGIN
-  G.LdrImm(RH, G.SP, 0, 8);
   IF (lo >= 0) & (lo < 1000H) THEN
-    G.CmpImm(RH, lo)
+    G.CmpImm(caseReg, lo)
   ELSE
-    G.MovImm(RH + 1, lo);
-    G.Cmp(RH, RH + 1)
+    G.MovImm(RH, lo);
+    G.Cmp(caseReg, RH)
   END;
   skipPos := G.Here();
   G.BCond(LT, 0);
   IF (hi >= 0) & (hi < 1000H) THEN
-    G.CmpImm(RH, hi)
+    G.CmpImm(caseReg, hi)
   ELSE
-    G.MovImm(RH + 1, hi);
-    G.Cmp(RH, RH + 1)
+    G.MovImm(RH, hi);
+    G.Cmp(caseReg, RH)
   END;
   G.BCond(LE, matchList);
   matchList := G.Here() - 1;
   G.PatchBCond(skipPos, G.Here())
 END CaseRangeLabel;
 
-(** Pop the saved case expression from the stack. *)
+(** Free the case expression register before executing a branch body. *)
+PROCEDURE CaseBodyBegin*;
+BEGIN
+  DEC(RH)
+END CaseBodyBegin;
+
+(** Restore the case expression register after a branch body
+    so the next branch can compare against it. *)
+PROCEDURE CaseBodyEnd*;
+BEGIN
+  INC(RH)
+END CaseBodyEnd;
+
+(** Free the case expression register at the end of the CASE statement. *)
 PROCEDURE CaseClean*;
 BEGIN
-  G.AddImm(G.SP, G.SP, 16)
+  DEC(RH)
 END CaseClean;
 
 (** - **)
@@ -1012,5 +1157,11 @@ PROCEDURE Exit*;
 BEGIN
   G.Exit
 END Exit;
+
+(** Generates a trap instruction for unmatched CASE. *)
+PROCEDURE Trap*;
+BEGIN
+  G.Brk(1)
+END Trap;
 
 END Emitter.

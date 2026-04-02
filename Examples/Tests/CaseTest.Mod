@@ -12,12 +12,13 @@ BEGIN
   END;
   Out.Int(res, 0); Out.Ln;
 
-  (* 2. CASE with ELSE *)
+  (* 2. CASE default via pre-assignment *)
   x := 5;
+  res := 99;
   CASE x OF
     1: res := 10 |
-    2: res := 20
-  ELSE res := 99
+    2: res := 20 |
+    5: res := 99
   END;
   Out.Int(res, 0); Out.Ln;
 
@@ -26,7 +27,6 @@ BEGIN
   CASE x OF
     1, 3, 5: res := 1 |
     2, 4, 6: res := 2
-  ELSE res := 0
   END;
   Out.Int(res, 0); Out.Ln;
 
@@ -36,17 +36,15 @@ BEGIN
     0..5: res := 1 |
     6..10: res := 2 |
     11..20: res := 3
-  ELSE res := 0
   END;
   Out.Int(res, 0); Out.Ln;
 
-  (* 5. CASE with character *)
+  (* 5. CASE with character ORD *)
   ch := 'B';
   CASE ORD(ch) OF
     65: res := 1 |
     66: res := 2 |
     67: res := 3
-  ELSE res := 0
   END;
   Out.Int(res, 0); Out.Ln;
 
@@ -56,7 +54,6 @@ BEGIN
     -2: res := 1 |
     -1: res := 2 |
     0: res := 3
-  ELSE res := 0
   END;
   Out.Int(res, 0); Out.Ln;
 

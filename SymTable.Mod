@@ -27,6 +27,9 @@ CONST
   Array*    = 14;
 
 TYPE
+  LONGINT = M.LONGINT;
+
+  ConstVal* = POINTER TO ConstValDesc;
   Object* = POINTER TO ObjectDesc;
   Type* = POINTER TO TypeDesc;
   Name* = POINTER TO NameDesc;
@@ -43,6 +46,12 @@ TYPE
     next: Lang
   END;
 
+  ConstValDesc* = RECORD
+    intVal*: INTEGER;
+    realVal*: REAL;
+    setVal*: SET
+  END;
+
   ObjectDesc* = RECORD
     names*: Name;
     exported*: BOOLEAN;
@@ -50,11 +59,14 @@ TYPE
     dsc*: Object;
     next*: Object;
     type*: Type;
-    val*: INTEGER (** Address for variables, number for procedures *)
+    address*: LONGINT; (** Address for variables, number for standard procedures *)
+    constVal*: ConstVal
   END;
 
   TypeDesc* = RECORD
-    form*: INTEGER;    len*: INTEGER; (** Array length; nofpars for Proc **)    nofpars*: INTEGER;
+    form*: INTEGER;
+    len*: INTEGER; (** Array length; nofpars for Proc *)
+    nofpars*: INTEGER;
     dsc*: Object;
     base*: Type;
     size*: INTEGER (** In bytes *)
@@ -151,77 +163,77 @@ BEGIN
   U := U.next;
   L.FindUniObj('ORD', s); SetName(U.names, s);
   U.class := SFunc;
-  U.val := 31;
+  U.address := 31;
   U.type := intType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('CHR', s); SetName(U.names, s);
   U.class := SFunc;
-  U.val := 32;
+  U.address := 32;
   U.type := charType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('ABS', s); SetName(U.names, s);
   U.class := SFunc;
-  U.val := 33;
+  U.address := 33;
   U.type := intType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('ODD', s); SetName(U.names, s);
   U.class := SFunc;
-  U.val := 34;
+  U.address := 34;
   U.type := boolType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('ASR', s); SetName(U.names, s);
   U.class := SFunc;
-  U.val := 35;
+  U.address := 35;
   U.type := intType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('LSL', s); SetName(U.names, s);
   U.class := SFunc;
-  U.val := 36;
+  U.address := 36;
   U.type := intType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('ROR', s); SetName(U.names, s);
   U.class := SFunc;
-  U.val := 37;
+  U.address := 37;
   U.type := intType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('INC', s); SetName(U.names, s);
   U.class := SProc;
-  U.val := 41;
+  U.address := 41;
   U.type := noType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('DEC', s); SetName(U.names, s);
   U.class := SProc;
-  U.val := 42;
+  U.address := 42;
   U.type := noType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('INCL', s); SetName(U.names, s);
   U.class := SProc;
-  U.val := 43;
+  U.address := 43;
   U.type := noType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('EXCL', s); SetName(U.names, s);
   U.class := SProc;
-  U.val := 44;
+  U.address := 44;
   U.type := noType;
 
   NEW(U.next);
@@ -240,14 +252,14 @@ BEGIN
   U := U.next;
   L.FindUniObj('FLOOR', s); SetName(U.names, s);
   U.class := SFunc;
-  U.val := 38;
+  U.address := 38;
   U.type := intType;
 
   NEW(U.next);
   U := U.next;
   L.FindUniObj('FLT', s); SetName(U.names, s);
   U.class := SFunc;
-  U.val := 39;
+  U.address := 39;
   U.type := realType;
 
   NEW(U.next);
@@ -272,7 +284,21 @@ BEGIN
   U := U.next;
   L.FindUniObj('LEN', s); SetName(U.names, s);
   U.class := SFunc;
-  U.val := 40;
+  U.address := 40;
+  U.type := intType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('SHORT', s); SetName(U.names, s);
+  U.class := SFunc;
+  U.address := 45;
+  U.type := intType;
+
+  NEW(U.next);
+  U := U.next;
+  L.FindUniObj('LONG', s); SetName(U.names, s);
+  U.class := SFunc;
+  U.address := 46;
   U.type := intType;
 
   U.next := dummy
@@ -370,7 +396,7 @@ VAR p: Object;
 BEGIN
   (* In.Char *)
   NEW(M.dsc); M := M.dsc;
-  M.class := Const; M.val := 1;
+  M.class := Const; M.address := 1;
   L.FindModObj(num, 'Char', s); SetName(M.names, s);
   NEW(M.type); M.type.form := Proc;
   M.type.nofpars := 1; M.type.base := noType;
@@ -380,7 +406,7 @@ BEGIN
 
   (* In.Int *)
   NEW(M.next); M := M.next;
-  M.class := Const; M.val := 2;
+  M.class := Const; M.address := 2;
   L.FindModObj(num, 'Int', s); SetName(M.names, s);
   NEW(M.type); M.type.form := Proc;
   M.type.nofpars := 1; M.type.base := noType;
@@ -396,7 +422,7 @@ VAR p: Object;
 BEGIN
   (* Out.Char *)
   NEW(M.dsc); M := M.dsc;
-  M.class := Const; M.val := 5;
+  M.class := Const; M.address := 5;
   L.FindModObj(num, 'Char', s); SetName(M.names, s);
   NEW(M.type); M.type.form := Proc;
   M.type.nofpars := 1; M.type.base := noType;
@@ -406,7 +432,7 @@ BEGIN
 
   (* Out.Int *)
   NEW(M.next); M := M.next;
-  M.class := Const; M.val := 6;
+  M.class := Const; M.address := 6;
   L.FindModObj(num, 'Int', s); SetName(M.names, s);
   NEW(M.type); M.type.form := Proc;
   M.type.nofpars := 2; M.type.base := noType;
@@ -418,7 +444,7 @@ BEGIN
 
   (* Out.Ln *)
   NEW(M.next); M := M.next;
-  M.class := Const; M.val := 7;
+  M.class := Const; M.address := 7;
   L.FindModObj(num, 'Ln', s); SetName(M.names, s);
   NEW(M.type); M.type.form := Proc;
   M.type.nofpars := 0; M.type.base := noType
@@ -456,7 +482,7 @@ BEGIN
         GetName(p.names, s);
         Out.String('Variable "'); Out.String(s);
         Out.String('" of type with form '); Out.Int(p.type.form, 0);
-        Out.String(' at address '); Out.Int(p.val, 0)
+        Out.String(' at address '); Out.Int(M.SHORT(p.address), 0)
       ELSIF p.class = Typ THEN
         GetName(p.names, s);
         Out.String('Type "'); Out.String(s);
@@ -553,7 +579,7 @@ VAR
   p: Object;
 BEGIN
   (* Create .sym file *)
-  Strings.Copy(modNames.str, fname);
+  Strings.Copy(M.outDir, fname); Strings.Append(modNames.str, fname);
   Strings.Append('.sym', fname);
   F := Files.New(fname);
 
@@ -572,7 +598,7 @@ BEGIN
       IF p.exported THEN
         Files.Write(R, p.class);
         OutputNames(R, p.names);
-        Files.WriteNum(R, p.val);
+        Files.WriteNum(R, M.SHORT(p.address));
 
         IF p.type # NIL THEN
           Files.WriteNum(R, p.type.form);

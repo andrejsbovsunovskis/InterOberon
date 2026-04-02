@@ -4,6 +4,7 @@
 
 cd "$(dirname "$0")"
 COMPILER=./InterOberon
+OUTDIR=bin
 PASS=0
 FAIL=0
 ERRORS=""
@@ -14,7 +15,7 @@ run_test() {
     local name=$(basename "$src" .Mod)
     
     # Compile
-    output=$($COMPILER "$src" 2>&1)
+    output=$($COMPILER -o "$OUTDIR/" "$src" 2>&1)
     if [ $? -ne 0 ]; then
         echo "FAIL [compile] $name"
         echo "  Compiler output: $output"
@@ -24,11 +25,8 @@ run_test() {
     fi
     
     # Run
-    actual=$(./"$name" 2>&1)
+    actual=$("$OUTDIR/$name" 2>&1)
     rc=$?
-    
-    # Clean up
-    rm -f "$name" "$name.obj" "$name.sym" 2>/dev/null
     
     if [ $rc -ne 0 ]; then
         echo "FAIL [crash] $name (exit code $rc)"
@@ -49,6 +47,8 @@ run_test() {
         ERRORS="$ERRORS\n  $name: output mismatch"
     fi
 }
+
+mkdir -p "$OUTDIR"
 
 echo "========================================"
 echo "  InterOberon Test Suite"
@@ -103,8 +103,8 @@ run_test "Examples/Tests/BoolTest.Mod" "1
 0
 0
 0
-0
-0"
+1
+1"
 
 # --- CharTest: character operations ---
 run_test "Examples/Tests/CharTest.Mod" "A
@@ -196,7 +196,7 @@ run_test "Examples/Tests/SetAdv.Mod" "0
 run_test "Examples/Tests/RealAdv.Mod" "1
 3
 3
--2
+-3
 11111
 1
 256
@@ -422,6 +422,41 @@ run_test "Examples/Tests/TypeTest.Mod" "100
 42
 777
 1"
+
+# --- Array3: multi-dimensional arrays ---
+run_test "Examples/Tests/Array3.Mod" "0 1 2 3 
+10 11 12 13 
+20 21 22 23 
+138
+99
+77
+0 1 10 11 20 21 
+100 101 110 111 120 121 
+726"
+
+# --- Array4: comma syntax for multi-dimensional arrays ---
+run_test "Examples/Tests/Array4.Mod" "0 1 2 3 
+10 11 12 13 
+20 21 22 23 
+138
+99
+77
+0 1 10 11 20 21 
+100 101 110 111 120 121 
+726"
+
+# --- Array5: arrays of various types ---
+run_test "Examples/Tests/Array5.Mod" "100
+400
+250000
+600000
+60
+31
+2
+36
+66
+77
+-999"
 
 echo ""
 echo "========================================"

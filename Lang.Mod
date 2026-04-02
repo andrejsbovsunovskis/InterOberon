@@ -55,7 +55,7 @@ VAR
   errors: ARRAY 128, 80 OF CHAR; (** error code < 128, error length < 80 *)
   compiler: ARRAY 13, 80 OF CHAR; (** 13 compiler messages, length < 80 *)
   kw: ARRAY 32 OF Pair; (** 32 keywords like BEGIN *)
-  uni: ARRAY 23 OF Pair; (** 23 universe objects like INTEGER *)
+  uni: ARRAY 32 OF Pair; (** universe objects like INTEGER *)
   mods: ARRAY 2 OF Module; (** 2 modules like Out *)
   modCount: INTEGER; (** Actual length of mods *)
 
@@ -179,6 +179,7 @@ BEGIN
   ClearPairs(m);
   i := 0;
   WHILE sym = string DO
+    (*TODO добавить проверку на вылет за рамки массива и выводить ошибку*)
     Strings.Copy(sval, m[i].key);
     GetSym;
     IF sym = eql THEN GetSymLn ELSE Mark(expEql) END;

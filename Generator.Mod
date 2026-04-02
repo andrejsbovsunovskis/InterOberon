@@ -8,7 +8,10 @@ CONST
   fileMark = ORD('A') + 256 * (ORD('R') + 256 * (ORD('M') + 256 * version));
 
   (** Special registers **)
-  SP* = 31; (** Stack pointer register *)
+  SP* = 31; (** Stack pointer register, also zero register *)
+
+TYPE
+  LONGINT = M.LONGINT;
 
 VAR
   outFile: Files.File; (** Output file *)
@@ -247,13 +250,18 @@ BEGIN
   DWord(n)
 END StrReg;
 
-(** ADD x{rd}, x{rn}, x{rm} *)
-PROCEDURE Add*(rd, rn, rm: INTEGER);
+(** ADD x{rd}, x{rn}, x{rm}, LSL #{shift} *)
+PROCEDURE AddLsl*(rd, rn, rm, shift: INTEGER);
 VAR n: INTEGER;
 BEGIN
-  n := 0BH * 1000000H + rm * 10000H + rn * 20H + rd;
+  n := 0BH * 1000000H + rm * 10000H + shift * 400H + rn * 20H + rd;
   n := -7FFFFFFFH - 1 + n; (* Set highest bit for sf=64bit *)
   DWord(n)
+END AddLsl;
+
+(** ADD x{rd}, x{rn}, x{rm} *)
+PROCEDURE Add*(rd, rn, rm: INTEGER);
+BEGIN AddLsl(rd, rn, rm, 0)
 END Add;
 
 (** SUB x{rd}, x{rn}, x{rm} *)
@@ -282,6 +290,15 @@ BEGIN
   n := -7FFFFFFFH - 1 + n; (* Set highest bit → 0x9B000000 *)
   DWord(n)
 END Mul;
+
+(** MADD x{rd}, x{rn}, x{rm}, x{ra} — rd := ra + rn * rm *)
+PROCEDURE Madd*(rd, rn, rm, ra: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 1BH * 1000000H + rm * 10000H + ra * 400H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Madd;
 
 (** SDIV x{rd}, x{rn}, x{rm} *)
 PROCEDURE Div*(rd, rn, rm: INTEGER);
@@ -435,6 +452,17 @@ BEGIN
   DWord(n)
 END AndImm1;
 
+(** ASR x{rd}, x{rn}, #{shift} — arithmetic shift right immediate *)
+PROCEDURE AsrImm*(rd, rn, shift: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  (* SBFM Xd, Xn, #shift, #63
+     Encoding: 0x9340FC00 | (shift << 16) | (Rn << 5) | Rd *)
+  n := 1340FC00H + shift * 10000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END AsrImm;
+
 (** ASRV x{rd}, x{rn}, x{rm} — arithmetic shift right *)
 PROCEDURE Asr*(rd, rn, rm: INTEGER);
 VAR n: INTEGER;
@@ -558,6 +586,53 @@ PROCEDURE Fcvtzs*(rd, fn: INTEGER);
 BEGIN DWord(1E380000H + fn * 20H + rd)
 END Fcvtzs;
 
+(** FCVTMS Wd, Sn — single-precision float to signed 32-bit integer,
+    rounding toward minus infinity *)
+PROCEDURE Fcvtms*(rd, fn: INTEGER);
+BEGIN DWord(1E300000H + fn * 20H + rd)
+END Fcvtms;
+
+(** CSINC Xd, Xn, Xm, cond — Rd = (cond) ? Rn : Rm+1
+    Used as CSET Xd, cond via CSINC Xd, xzr, xzr, Negated(cond) *)
+PROCEDURE CSInc*(rd, rn, rm, cond: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  (* CSINC Xd, Xn, Xm, cond
+     Encoding: 1 0 0 11010100 Rm[20:16] cond[15:12] 01 Rn[9:5] Rd[4:0]
+     = 0x9A800400 | Rm<<16 | cond<<12 | Rn<<5 | Rd *)
+  n := 1A800400H + rm * 10000H + cond * 1000H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END CSInc;
+
+(** BRK #imm16 — breakpoint trap *)
+PROCEDURE Brk*(imm: INTEGER);
+BEGIN
+  DWord(0D4200000H + (imm MOD 10000H) * 20H)
+END Brk;
+
+(** CBZ Xn, offset — compare and branch if zero *)
+PROCEDURE Cbz*(rn, offset: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  (* CBZ Xt, label: 1 011010 0 imm19 Rt
+     = 0xB4000000 | (imm19<<5) | Rt *)
+  n := 34000000H + (offset MOD 80000H) * 20H + rn;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Cbz;
+
+(** TBZ Xn, #bit, offset — test bit and branch if zero *)
+PROCEDURE Tbz*(rn, bit, offset: INTEGER);
+VAR n, b5, b40: INTEGER;
+BEGIN
+  (* TBZ b5 0110110 b40 imm14 Rt *)
+  b5 := bit DIV 32;
+  b40 := bit MOD 32;
+  n := 36000000H + b5 * 80000000H + b40 * 80000H + (offset MOD 4000H) * 20H + rn;
+  DWord(n)
+END Tbz;
+
 (** FMOV Sd, Wn — move bits from GPR to FPR *)
 PROCEDURE FMovWtoS*(fd, rn: INTEGER);
 BEGIN DWord(1E270000H + rn * 20H + fd)
@@ -603,7 +678,8 @@ BEGIN
   codeFile := Files.New('');
   Files.Set(codeR, codeFile, 0);
 
-  Strings.Copy(modName, s); Strings.Append('.obj', s);
+  Strings.Copy(M.outDir, s);
+  Strings.Append(modName, s);Strings.Append('.obj', s);
   outFile := Files.New(s);
   IF outFile # NIL THEN
     Files.Set(outR, outFile, 0);

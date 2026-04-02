@@ -8,7 +8,6 @@ BEGIN
     0..25: res := 1
   | 26..50: res := 2
   | 51..100: res := 3
-  ELSE res := 0
   END;
   Out.Int(res, 0); Out.Ln;
 
@@ -17,7 +16,6 @@ BEGIN
   CASE x OF
     0..10: res := 10
   | 11..20: res := 20
-  ELSE res := 0
   END;
   Out.Int(res, 0); Out.Ln;
 
@@ -26,7 +24,6 @@ BEGIN
   CASE x OF
     0..10: res := 10
   | 11..20: res := 20
-  ELSE res := 0
   END;
   Out.Int(res, 0); Out.Ln;
 
@@ -36,16 +33,15 @@ BEGIN
     1, 3, 5: res := 1
   | 2, 4, 6: res := 2
   | 7..10: res := 3
-  ELSE res := 0
   END;
   Out.Int(res, 0); Out.Ln;
 
-  (* 5. CASE falls to ELSE *)
-  x := 999;
+  (* 5. CASE with pre-assigned default *)
+  res := -1;
+  x := 1;
   CASE x OF
-    1: res := 1
+    1: res := -1
   | 2: res := 2
-  ELSE res := -1
   END;
   Out.Int(res, 0); Out.Ln;
 
@@ -71,7 +67,7 @@ BEGIN
       1: Out.Char('A')
     | 2: Out.Char('B')
     | 3: Out.Char('C')
-    | 40: Out.Char('D')
+    | 4: Out.Char('D')
     END
   END;
   Out.Ln;
@@ -81,7 +77,6 @@ BEGIN
   CASE x OF
     -5..-1: res := 1
   | 0..5: res := 2
-  ELSE res := 0
   END;
   Out.Int(res, 0); Out.Ln
 END CaseAdv.

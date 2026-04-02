@@ -1,6 +1,9 @@
 MODULE Parser;
 IMPORT S := Scanner, ST := SymTable, E := ErrorMsg, Strings,
-  Generator, Emitter, Out, Lang;
+  Generator, Emitter, Out, Lang, M := Machine;
+
+TYPE
+  LONGINT = M.LONGINT;
 
 VAR
   sym: INTEGER;
@@ -66,11 +69,13 @@ BEGIN
   IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END
 END ImportList;
 
-(** Type = ident | ARRAY expr OF Type. *)
+(** Type = ident | ARRAY expr {"," expr} OF Type. *)
 PROCEDURE Type(VAR T: ST.Type);
 VAR p: ST.Object;
   x: Emitter.Item;
   elemType: ST.Type;
+  dims: ARRAY 8 OF INTEGER;
+  n, i: INTEGER;
 BEGIN
   T := ST.intType;
   IF sym = S.ident THEN
@@ -87,13 +92,25 @@ BEGIN
     S.Get(sym);
     Expr0(x);
     IF x.mode # ST.Const THEN S.Mark(E.expConst); x.a := 1 END;
+    dims[0] := x.a; n := 1;
+    WHILE (sym = S.comma) & (n < 8) DO
+      S.Get(sym);
+      Expr0(x);
+      IF x.mode # ST.Const THEN S.Mark(E.expConst); x.a := 1 END;
+      dims[n] := x.a; INC(n)
+    END;
     IF sym = S.of THEN S.Get(sym) ELSE S.Mark(E.expOf) END;
     Type(elemType);
-    NEW(T);
-    T.form := ST.Array;
-    T.base := elemType;
-    T.len := x.a;
-    T.size := x.a * elemType.size
+    i := n - 1;
+    WHILE i >= 0 DO
+      NEW(T);
+      T.form := ST.Array;
+      T.base := elemType; (* Wrap around *)
+      T.len := dims[i];
+      T.size := dims[i] * elemType.size;
+      elemType := T;
+      DEC(i)
+    END
   ELSE S.Mark(E.expIdent)
   END
 END Type;
@@ -139,13 +156,33 @@ BEGIN
     IF align > 1 THEN
       varsize := (varsize + align - 1) DIV align * align
     END;
-    p.val := varsize;
+    p.address := varsize;
     varsize := varsize + T.size;
     p := p.next
   UNTIL p = ST.dummy
 END VarDecl;
 
-(** DeclSeq = [VAR {VarDecl ";"}]. *)
+(** ConstDecl = ident "=" ConstExpr. *)
+PROCEDURE ConstDecl;
+VAR p: ST.Object;
+  x: Emitter.Item;
+BEGIN
+  IF sym = S.ident THEN
+    p := ST.NewObject(ST.Const, S.id);
+    S.Get(sym);
+    IF sym = S.eql THEN S.Get(sym)
+    ELSE S.Mark(E.expEql)
+    END;
+    Expr0(x);
+    IF x.mode # ST.Const THEN S.Mark(E.expConst) END;
+    NEW(p.constVal);
+    p.constVal.intVal := x.a;
+    p.type := x.type
+  ELSE S.Mark(E.expIdent)
+  END
+END ConstDecl;
+
+(** DeclSeq = [CONST {ConstDecl ";"}] [VAR {VarDecl ";"}]. *)
 PROCEDURE DeclSeq;
 VAR firstVar, p: ST.Object;
   i, j: INTEGER;
@@ -169,6 +206,13 @@ VAR firstVar, p: ST.Object;
   END ReadTrans;
 
 BEGIN
+  IF sym = S.const THEN
+    S.Get(sym);
+    WHILE sym = S.ident DO
+      ConstDecl;
+      IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END
+    END
+  END;
   IF sym = S.var THEN
     S.Get(sym);
     WHILE sym = S.ident DO
@@ -191,7 +235,7 @@ BEGIN
   END
 END DeclSeq;
 
-(** Selector = {"[" Expr "]"}. *)
+(** Selector = {"[" Expr {"," Expr} "]"}. *)
 PROCEDURE Selector(VAR x: Emitter.Item);
 VAR y: Emitter.Item;
 BEGIN
@@ -199,6 +243,11 @@ BEGIN
     S.Get(sym);
     Expr0(y);
     Emitter.Index(x, y);
+    WHILE sym = S.comma DO
+      S.Get(sym);
+      Expr0(y);
+      Emitter.Index(x, y)
+    END;
     IF sym = S.rbrak THEN S.Get(sym) ELSE S.Mark(E.expRbrak) END
   END
 END Selector;
@@ -245,10 +294,11 @@ BEGIN
     END;
     IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END;
     IF func = 31 (*ORD*) THEN
-      IF x.type.form = ST.Char THEN Emitter.Ord(x)
-      ELSIF x.type.form = ST.Bool THEN Emitter.Ord(x)
-      ELSIF x.type.form IN {ST.Set, ST.LongSet} THEN Emitter.Ord(x)
-      ELSIF x.type.form = ST.Byte THEN Emitter.Ord(x)
+      IF x.type.form = ST.Char THEN Emitter.Ord(x); x.type := ST.intType
+      ELSIF x.type.form = ST.Bool THEN Emitter.Ord(x); x.type := ST.intType
+      ELSIF x.type.form = ST.Set THEN Emitter.Ord(x); x.type := ST.intType
+      ELSIF x.type.form = ST.LongSet THEN
+        Emitter.Ord(x); x.type := ST.longIntType
       END
     ELSIF func = 32 (*CHR*) THEN
       IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) OR
@@ -256,7 +306,7 @@ BEGIN
     ELSIF func = 33 (*ABS*) THEN
       IF x.type.form IN {ST.Int, ST.ShortInt, ST.LongInt} THEN Emitter.AbsVal(x) END
     ELSIF func = 34 (*ODD*) THEN
-      IF x.type.form IN {ST.Int, ST.ShortInt, ST.LongInt} THEN Emitter.OddVal(x) END
+      IF x.type.form IN {ST.Int, ST.ShortInt, ST.LongInt, ST.Byte} THEN Emitter.OddVal(x) END
     ELSIF func = 35 (*ASR*) THEN
       CheckInt(x); Emitter.AsrVal(x, y)
     ELSIF func = 36 (*LSL*) THEN
@@ -276,9 +326,27 @@ BEGIN
         Emitter.MakeConstItem(x, ST.intType, x.type.len)
       ELSE S.Mark(E.notArray)
       END
+    ELSIF func = 45 (*SHORT*) THEN
+      IF x.type.form = ST.LongInt THEN
+        Emitter.Short(x); x.type := ST.intType
+      ELSIF x.type.form = ST.Int THEN
+        Emitter.Short(x); x.type := ST.shortIntType
+      ELSIF x.type.form = ST.LongSet THEN
+        Emitter.Short(x); x.type := ST.setType
+      ELSE S.Mark(E.incompatible)
+      END
+    ELSIF func = 46 (*LONG*) THEN
+      IF x.type.form = ST.Int THEN
+        Emitter.Long(x); x.type := ST.longIntType
+      ELSIF x.type.form = ST.ShortInt THEN
+        Emitter.Long(x); x.type := ST.intType
+      ELSIF x.type.form = ST.Set THEN
+        Emitter.Long(x); x.type := ST.longSetType
+      ELSE S.Mark(E.incompatible)
+      END
     ELSE ASSERT(FALSE)
     END;
-    x.type := resType
+    IF (func # 31) & (func # 45) & (func # 46) THEN x.type := resType END
   ELSE S.Mark(E.expLparen)
   END
 END StandFunc;
@@ -368,7 +436,7 @@ BEGIN
     S.Get(sym)
   ELSIF sym = S.ident THEN
     QualIdent(obj);
-    IF obj.class = ST.SFunc THEN StandFunc(x, obj.val, obj.type)
+    IF obj.class = ST.SFunc THEN StandFunc(x, M.SHORT(obj.address), obj.type)
     ELSE Emitter.MakeItem(x, obj); Selector(x)
     END
   ELSIF sym = S.string THEN
@@ -773,9 +841,11 @@ BEGIN
   nextL := 0;
   Emitter.FJump(nextL);
   Emitter.FixLink(matchL);
+  Emitter.CaseBodyBegin;
   IF sym = S.colon THEN S.Get(sym) ELSE S.Mark(E.expColon) END;
   StatSeq0;
   Emitter.FJump(exitL);
+  Emitter.CaseBodyEnd;
   Emitter.FixLink(nextL);
   WHILE sym = S.bar DO
     S.Get(sym);
@@ -784,15 +854,14 @@ BEGIN
     nextL := 0;
     Emitter.FJump(nextL);
     Emitter.FixLink(matchL);
+    Emitter.CaseBodyBegin;
     IF sym = S.colon THEN S.Get(sym) ELSE S.Mark(E.expColon) END;
     StatSeq0;
     Emitter.FJump(exitL);
+    Emitter.CaseBodyEnd;
     Emitter.FixLink(nextL)
   END;
-  IF sym = S.else THEN
-    S.Get(sym);
-    StatSeq0
-  END;
+  Emitter.Trap;
   Emitter.FixLink(exitL);
   Emitter.CaseClean;
   IF sym = S.end THEN S.Get(sym) ELSE S.Mark(E.expEnd) END
@@ -807,7 +876,7 @@ BEGIN
   IF sym = S.ident THEN
     QualIdent(obj);
     IF obj.class = ST.SProc THEN
-      StandProc(obj.val)
+      StandProc(M.SHORT(obj.address))
     ELSE
       Emitter.MakeItem(x, obj);
       Selector(x);

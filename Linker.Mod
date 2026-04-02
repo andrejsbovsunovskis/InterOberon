@@ -1,5 +1,5 @@
 MODULE Linker;
-IMPORT Files, Strings, E := ErrorMsg, M := Machine, SYSTEM;
+IMPORT Files, Strings, E := ErrorMsg, M := Machine;
 
 CONST
   version = 1;
@@ -7,7 +7,7 @@ CONST
   objFileMark = ORD('A') + 256 * (ORD('R') + 256 * (ORD('M') + 256 * version));
 
 TYPE
-  HUGEINT = SYSTEM.INT64;
+  LONGINT = M.LONGINT;
 
 VAR
   objFile: Files.File;
@@ -39,7 +39,7 @@ BEGIN
 END DWord;
 
 (** Outputs a quadruple word = 8 bytes to the file. Little-endian.*)
-PROCEDURE QWord(x: HUGEINT);
+PROCEDURE QWord(x: LONGINT);
 BEGIN
   Byte(x MOD 100H);
   Byte(x DIV 100H MOD 100H);
@@ -659,9 +659,13 @@ BEGIN
   ok := FALSE;
   
   (* Prepare file names *)
-  Strings.Copy(modName, objName);
+  Strings.Copy(M.outDir, objName); Strings.Append(modName, objName);
   Strings.Append('.obj', objName);
-  Strings.Copy(modName, exeName);
+  IF M.outExe[0] # 0X THEN
+    Strings.Copy(M.outExe, exeName)
+  ELSE
+    Strings.Copy(M.outDir, exeName); Strings.Append(modName, exeName)
+  END;
   
   (* Open object file *)
   objFile := Files.Old(objName);

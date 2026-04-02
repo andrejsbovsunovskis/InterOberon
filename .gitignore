@@ -6,6 +6,5 @@
 *.sym
 *.hex
 .DS_Store
-
-/Factorize
-/Example
+/bin/*
+!/bin/.keep

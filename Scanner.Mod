@@ -4,29 +4,29 @@ IMPORT Files, Out, E := ErrorMsg, Lang, M := Machine;
 CONST
   (** Symbols **)
   null       = 0;  (** Bad character *)
-  times*     = 1;  (** *   *)
-  rdiv*      = 2;  (** /   *)
-  div*       = 3;  (** DIV *)
-  mod*       = 4;  (** MOD *)
-  and*       = 5;  (** &   *)
-  plus*      = 6;  (** +   *)
-  minus*     = 7;  (** -   *)
-  or*        = 8;  (** OR  *)
-  eql*       = 9;  (** =   *)
-  neq*       = 10; (** #   *)
-  lss*       = 11; (** <   *)
-  leq*       = 12; (** <=  *)
-  gtr*       = 13; (** >   *)
-  geq*       = 14; (** >=  *)
-  lbrak*     = 15; (** [   *)
-  rbrak*     = 16; (** ]   *)
-  period*    = 18; (** .   *)
-  upto*      = 19; (** ..  *)
+  times*     = 1;  (** *  *)
+  rdiv*      = 2;  (** /  *)
+  div*       = 3;
+  mod*       = 4;
+  and*       = 5;  (** &  *)
+  plus*      = 6;  (** +  *)
+  minus*     = 7;  (** -  *)
+  or*        = 8;
+  eql*       = 9;  (** =  *)
+  neq*       = 10; (** #  *)
+  lss*       = 11; (** <  *)
+  leq*       = 12; (** <= *)
+  gtr*       = 13; (** >  *)
+  geq*       = 14; (** >= *)
+  lbrak*     = 15; (** [  *)
+  rbrak*     = 16; (** ]  *)
+  period*    = 18; (** .  *)
+  upto*      = 19; (** .. *)
   char*      = 20;
   int*       = 21;
   real*      = 22;
-  false*     = 23; (** FALSE *)
-  true*      = 24; (** TRUE  *)
+  false*     = 23;
+  true*      = 24;
   string*    = 26;
   not*       = 27; (** ~ *)
   lparen*    = 28; (** ( *)
@@ -37,10 +37,10 @@ CONST
   for*       = 33;
   while*     = 34;
   repeat*    = 35;
-  in*        = 36;  (** IN *)
+  in*        = 36; (** IN *)
   case*      = 37;
   of*        = 38;
-  bar*       = 39;  (** | *)
+  bar*       = 39; (** |  *)
   comma*     = 40;
   colon*     = 41;
   becomes*   = 42; (** := *)
@@ -54,9 +54,9 @@ CONST
   else*      = 55;
   elsif*     = 56;
   until*     = 57;
-(*const*     = 63;*)
+  const*     = 63;
   array*     = 64;
-  var*       = 65; (** VAR *)
+  var*       = 65;
   begin*     = 67;
   import*    = 68;
   module*    = 69;
@@ -68,6 +68,9 @@ CONST
   maxTrans*    = 8;    (** Max translation entries in a comment *)
   maxLangLen*  = 5;    (** Max length of a language code *)
   maxTransLen* = 2048; (** Max length of a translation string *)
+
+TYPE
+  LONGINT = M.LONGINT;
 
 VAR
   moduleFname: ARRAY 128 OF CHAR;
@@ -424,6 +427,7 @@ BEGIN
       ELSIF kw = 'CASE'   THEN sym := case
       ELSIF kw = 'OF'     THEN sym := of
       ELSIF kw = 'ARRAY'  THEN sym := array
+      ELSIF kw = 'CONST'  THEN sym := const
       ELSE Mark(E.unknownKW)
       END
     ELSE sym := null; Read

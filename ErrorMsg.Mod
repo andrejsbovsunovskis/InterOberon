@@ -10,6 +10,7 @@ CONST
   expColon*          = 6;
   expBecomes*        = 7;
   expType*           = 8;
+  expEql*            = 15;
   expBool*           = 9;
   expThen*           = 10;
   expDo*             = 11;

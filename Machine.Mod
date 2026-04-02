@@ -1,8 +1,12 @@
 MODULE Machine;
-IMPORT Out, Lang, Platform, Utf8;
+IMPORT Out, Lang, Platform, Utf8, Strings, SYSTEM;
 
 TYPE
+  LONGINT* = SYSTEM.INT64;
   SHORTCHAR = Utf8.SHORTCHAR;
+
+VAR
+  outDir*, outExe*: ARRAY 256 OF CHAR;
 
 (** Run a command in the OS. For chmod and signing the executable. *)
 PROCEDURE Exec*(command: ARRAY OF CHAR): INTEGER;
@@ -84,4 +88,35 @@ BEGIN
   Out.Char(' '); Out.Int(n, 0); Out.Char('.'); Out.Ln
 END WriteErrorI;
 
+PROCEDURE SHORT*(x: LONGINT): INTEGER;
+RETURN SYSTEM.VAL(INTEGER, x) END SHORT;
+
+PROCEDURE SetOutDir*(path: ARRAY OF CHAR);
+VAR n, i, last: INTEGER;
+BEGIN
+  n := Strings.Length(path);
+  IF (n > 0) & (path[n - 1] = '/') THEN
+    (* Directory mode: -o dir/ *)
+    Strings.Copy(path, outDir);
+    outExe := ''
+  ELSIF n > 0 THEN
+    (* Filename mode: -o name or -o dir/name *)
+    last := -1; i := 0;
+    WHILE i < n DO
+      IF path[i] = '/' THEN last := i END;
+      INC(i)
+    END;
+    IF last >= 0 THEN
+      Strings.Copy(path, outDir);
+      outDir[last + 1] := 0X
+    ELSE
+      outDir := ''
+    END;
+    Strings.Copy(path, outExe)
+  END
+END SetOutDir;
+
+BEGIN
+  outDir := '';
+  outExe := ''
 END Machine.
