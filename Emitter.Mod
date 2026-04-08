@@ -41,7 +41,6 @@ TYPE
 
 VAR
   RH: INTEGER; (** Number of the highest free register *)
-  caseReg: INTEGER; (** Register holding the CASE expression value *)
 
   cmpNeeded: BOOLEAN;
 
@@ -1083,48 +1082,47 @@ END ForClean;
 
 (** CASE statement support **)
 
-(** Keep case expression value in a register. *)
+(** Load case expression value into a register. *)
 PROCEDURE CaseSave*(VAR x: Item);
 BEGIN
   Load(x);
   IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
   ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r)
-  END;
-  caseReg := x.r
+  END
 END CaseSave;
 
-(** Compare case register with a single value.
+(** Compare case expression with a single value.
     Emits conditional jump chained into matchList when equal. *)
-PROCEDURE CaseLabel*(val: INTEGER; VAR matchList: INTEGER);
+PROCEDURE CaseLabel*(VAR x: Item; val: INTEGER; VAR matchList: INTEGER);
 BEGIN
   IF (val >= 0) & (val < 1000H) THEN
-    G.CmpImm(caseReg, val)
+    G.CmpImm(x.r, val)
   ELSE
     G.MovImm(RH, val);
-    G.Cmp(caseReg, RH)
+    G.Cmp(x.r, RH)
   END;
   G.BCond(EQ, matchList);
   matchList := G.Here() - 1
 END CaseLabel;
 
-(** Compare case register with a range [lo..hi].
+(** Compare case expression with a range [lo..hi].
     Emits conditional jump chained into matchList when in range. *)
-PROCEDURE CaseRangeLabel*(lo, hi: INTEGER; VAR matchList: INTEGER);
+PROCEDURE CaseRangeLabel*(VAR x: Item; lo, hi: INTEGER; VAR matchList: INTEGER);
 VAR skipPos: INTEGER;
 BEGIN
   IF (lo >= 0) & (lo < 1000H) THEN
-    G.CmpImm(caseReg, lo)
+    G.CmpImm(x.r, lo)
   ELSE
     G.MovImm(RH, lo);
-    G.Cmp(caseReg, RH)
+    G.Cmp(x.r, RH)
   END;
   skipPos := G.Here();
   G.BCond(LT, 0);
   IF (hi >= 0) & (hi < 1000H) THEN
-    G.CmpImm(caseReg, hi)
+    G.CmpImm(x.r, hi)
   ELSE
     G.MovImm(RH, hi);
-    G.Cmp(caseReg, RH)
+    G.Cmp(x.r, RH)
   END;
   G.BCond(LE, matchList);
   matchList := G.Here() - 1;

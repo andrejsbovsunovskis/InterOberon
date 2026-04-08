@@ -458,6 +458,14 @@ run_test "Examples/Tests/Array5.Mod" "100
 77
 -999"
 
+# --- CaseNest: nested CASE statements ---
+run_test "Examples/Tests/CaseNest.Mod" "23
+200
+31
+123
+2
+ABC"
+
 echo ""
 echo "========================================"
 printf "  Results: %d passed, %d failed out of %d total\n" $PASS $FAIL $((PASS + FAIL))

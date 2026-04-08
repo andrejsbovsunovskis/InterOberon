@@ -174,7 +174,7 @@ BEGIN
     ELSE S.Mark(E.expEql)
     END;
     Expr0(x);
-    IF x.mode # ST.Const THEN S.Mark(E.expConst) END;
+    IF x.mode # ST.Const THEN S.Mark(E.expConst); x.mode := ST.Const; x.a := 0 END;
     NEW(p.constVal);
     p.constVal.intVal := x.a;
     p.type := x.type
@@ -734,11 +734,10 @@ BEGIN
   StatSeq0;
 
   IF sym # S.until THEN S.Mark(E.expUntil)
-  ELSE S.Get(sym);
+  ELSE
+    S.Get(sym);
     Expr(x);
     IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
-
-    (* CONDITIONAL BACK JUMP TO START OF LOOP *)
     Emitter.CBJump(x, L)
   END
 END RepeatStatement;
@@ -753,7 +752,9 @@ VAR obj: ST.Object;
 BEGIN
   S.Get(sym);
   IF sym = S.ident THEN
-    QualIdent(obj);
+    obj := ST.ThisObject();
+    IF obj = NIL THEN S.Mark(E.undecl); obj := dummy END;
+    S.Get(sym);
     IF sym = S.becomes THEN S.Get(sym)
     ELSIF sym = S.eql THEN S.Mark(E.expBecomes); S.Get(sym)
     ELSE S.Mark(E.expBecomes)
@@ -794,72 +795,67 @@ BEGIN
   IF sym = S.end THEN S.Get(sym) ELSE S.Mark(E.expEnd) END
 END ForStatement;
 
-(** CaseStatement = CASE expression OF case {"|" case}
-    [ELSE StatementSequence] END.
-    case = [caseLabelList ":" StatementSequence].
-    caseLabelList = caseLabels {"," caseLabels}.
-    caseLabels = constExpr [".." constExpr]. *)
+(** CaseStatement = CASE expression OF case {"|" case} END.
+    case = [caseLabelList ":" StatementSequence]. *)
 PROCEDURE CaseStatement;
-VAR x, y: Emitter.Item;
-  exitL, matchL, nextL: INTEGER;
+VAR expr: Emitter.Item;
+  exitL: INTEGER;
 
-  PROCEDURE CaseLabels;
+  (** caseLabelList = caseLabels {"," caseLabels}.
+      caseLabels = constExpr [".." constExpr]. *)
+  PROCEDURE CaseLabelList(VAR expr: Emitter.Item; VAR matchL: INTEGER);
   VAR x, y: Emitter.Item;
   BEGIN
     Expr0(x);
-    IF x.mode # ST.Const THEN S.Mark(E.notValue) END;
+    IF x.mode # ST.Const THEN S.Mark(E.notValue); x.mode := ST.Const; x.a := 0 END;
     IF sym = S.upto THEN
       S.Get(sym); Expr0(y);
-      IF y.mode # ST.Const THEN S.Mark(E.notValue) END;
-      Emitter.CaseRangeLabel(x.a, y.a, matchL)
+      IF y.mode # ST.Const THEN S.Mark(E.notValue); y.mode := ST.Const; y.a := 0 END;
+      Emitter.CaseRangeLabel(expr, x.a, y.a, matchL)
     ELSE
-      Emitter.CaseLabel(x.a, matchL)
+      Emitter.CaseLabel(expr, x.a, matchL)
     END;
     WHILE sym = S.comma DO
       S.Get(sym);
       Expr0(x);
-      IF x.mode # ST.Const THEN S.Mark(E.notValue) END;
+      IF x.mode # ST.Const THEN S.Mark(E.notValue); x.mode := ST.Const; x.a := 0 END;
       IF sym = S.upto THEN
         S.Get(sym); Expr0(y);
-        IF y.mode # ST.Const THEN S.Mark(E.notValue) END;
-        Emitter.CaseRangeLabel(x.a, y.a, matchL)
+        IF y.mode # ST.Const THEN S.Mark(E.notValue); y.mode := ST.Const; y.a := 0 END;
+        Emitter.CaseRangeLabel(expr, x.a, y.a, matchL)
       ELSE
-        Emitter.CaseLabel(x.a, matchL)
+        Emitter.CaseLabel(expr, x.a, matchL)
       END
     END
-  END CaseLabels;
+  END CaseLabelList;
 
-BEGIN
-  S.Get(sym);
-  Expr0(x);
-  Emitter.CaseSave(x);
-  IF sym = S.of THEN S.Get(sym) ELSE S.Mark(E.expOf) END;
-  exitL := 0;
-  IF sym = S.bar THEN S.Get(sym) END;
-  matchL := 0;
-  CaseLabels;
-  nextL := 0;
-  Emitter.FJump(nextL);
-  Emitter.FixLink(matchL);
-  Emitter.CaseBodyBegin;
-  IF sym = S.colon THEN S.Get(sym) ELSE S.Mark(E.expColon) END;
-  StatSeq0;
-  Emitter.FJump(exitL);
-  Emitter.CaseBodyEnd;
-  Emitter.FixLink(nextL);
-  WHILE sym = S.bar DO
-    S.Get(sym);
+  PROCEDURE Case(VAR expr: Emitter.Item; VAR exitL: INTEGER);
+  VAR matchL, nextL: INTEGER;
+  BEGIN
     matchL := 0;
-    CaseLabels;
+    CaseLabelList(expr, matchL);
+    IF sym = S.colon THEN S.Get(sym) ELSE S.Mark(E.expColon) END;
     nextL := 0;
     Emitter.FJump(nextL);
     Emitter.FixLink(matchL);
     Emitter.CaseBodyBegin;
-    IF sym = S.colon THEN S.Get(sym) ELSE S.Mark(E.expColon) END;
     StatSeq0;
     Emitter.FJump(exitL);
     Emitter.CaseBodyEnd;
     Emitter.FixLink(nextL)
+  END Case;
+
+BEGIN
+  S.Get(sym);
+  Expr0(expr);
+  Emitter.CaseSave(expr);
+  IF sym = S.of THEN S.Get(sym) ELSE S.Mark(E.expOf) END;
+  exitL := 0;
+  WHILE sym = S.bar DO S.Get(sym) END;
+  IF (sym # S.end) & (sym # S.bar) THEN Case(expr, exitL) END;
+  WHILE sym = S.bar DO
+    S.Get(sym);
+    IF (sym # S.end) & (sym # S.bar) THEN Case(expr, exitL) END
   END;
   Emitter.Trap;
   Emitter.FixLink(exitL);
