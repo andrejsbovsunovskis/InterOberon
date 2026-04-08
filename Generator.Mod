@@ -668,10 +668,6 @@ END FStrImm;
 PROCEDURE Here*(): INTEGER;
 RETURN Files.Pos(codeR) DIV 4 END Here;
 
-PROCEDURE Init*;
-BEGIN
-END Init;
-
 PROCEDURE Open*(modName: ARRAY OF CHAR);
 VAR s: ARRAY 256 OF CHAR;
 BEGIN
@@ -687,6 +683,10 @@ BEGIN
   ELSE M.WriteErrorS(E.cantCreateFile, s)
   END
 END Open;
+
+PROCEDURE Init*;
+BEGIN
+END Init;
 
 PROCEDURE Close*;
 VAR R: Files.Rider;

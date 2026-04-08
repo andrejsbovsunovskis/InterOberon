@@ -1,6 +1,6 @@
 MODULE ForTest;
 IMPORT Out;
-VAR i, sum, n: INTEGER;
+VAR i, j, k, sum, n, m, p: INTEGER;
 BEGIN
   (* 1. Simple FOR 0 TO 5 *)
   FOR i := 0 TO 5 DO
@@ -44,6 +44,45 @@ BEGIN
   (* 7. FOR single iteration *)
   FOR i := 7 TO 7 DO
     Out.Int(i, 0)
+  END;
+  Out.Ln;
+
+  (* 8. Nested FOR with variable ends — 2 callee-saved regs *)
+  n := 3; m := 2;
+  FOR i := 1 TO n DO
+    FOR j := 1 TO m DO
+      Out.Int(i * 10 + j, 0); Out.Char(' ')
+    END
+  END;
+  Out.Ln;
+
+  (* 9. Triple nested FOR with variable ends — 3 callee-saved regs *)
+  n := 2; m := 2; p := 2;
+  sum := 0;
+  FOR i := 1 TO n DO
+    FOR j := 1 TO m DO
+      FOR k := 1 TO p DO
+        sum := sum + i * 100 + j * 10 + k
+      END
+    END
+  END;
+  Out.Int(sum, 0); Out.Ln;
+
+  (* 10. Nested: outer variable end, inner constant end *)
+  n := 3;
+  FOR i := 1 TO n DO
+    FOR j := 1 TO 2 DO
+      Out.Int(i, 0)
+    END
+  END;
+  Out.Ln;
+
+  (* 11. Nested: outer constant end, inner variable end *)
+  m := 3;
+  FOR i := 1 TO 2 DO
+    FOR j := 1 TO m DO
+      Out.Int(j, 0)
+    END
   END;
   Out.Ln
 END ForTest.

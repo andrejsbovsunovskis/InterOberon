@@ -2,7 +2,9 @@ MODULE Emitter;
 IMPORT ST := SymTable, S := Scanner, G := Generator, E := ErrorMsg, Files, Strings, M := Machine;
 
 CONST
-  maxGenReg = 28; (** Max number of general-purpose registers (x0..x28) *)
+  maxGenReg = 18;  (** Last general-purpose register (x18) *)
+  firstCSReg = 19; (** First callee-saved register (x19) *)
+  maxCSReg = 28;   (** Last callee-saved register (x28) *)
 
   (** Values of Item.mode **)
   (** Some of Object Classes from SymTable are also valid *)
@@ -40,7 +42,8 @@ TYPE
   END;
 
 VAR
-  RH: INTEGER; (** Number of the highest free register *)
+  RH: INTEGER; (** Next free general-purpose register (x0..x18) *)
+  SH: INTEGER; (** Next free callee-saved register (x19..x28) *)
 
   cmpNeeded: BOOLEAN;
 
@@ -66,15 +69,35 @@ END MakeItem;
 
 (** Load in registers **)
 
-(** Occupy register RH *)
-PROCEDURE IncR;
+(** Allocate the next general-purpose register *)
+PROCEDURE AllocR(): INTEGER;
+VAR r: INTEGER;
 BEGIN
-  IF RH < maxGenReg THEN
+  r := RH;
+  IF RH <= maxGenReg THEN
     INC(RH)
   ELSE
     S.Mark(E.regOverflow)
   END
-END IncR;
+RETURN r END AllocR;
+
+(** Allocate a callee-saved register for long-lived values *)
+PROCEDURE AllocS(): INTEGER;
+VAR r: INTEGER;
+BEGIN
+  r := SH;
+  IF SH <= maxCSReg THEN
+    INC(SH)
+  ELSE
+    S.Mark(E.regOverflow)
+  END
+RETURN r END AllocS;
+
+(** Free the last allocated callee-saved register *)
+PROCEDURE FreeS;
+BEGIN
+  IF SH > firstCSReg THEN DEC(SH) END
+END FreeS;
 
 PROCEDURE Negated(code: INTEGER): INTEGER;
 BEGIN
@@ -110,8 +133,7 @@ BEGIN
       ELSE
         G.MovImm(RH, x.a)
       END;
-      x.r := RH;
-      IncR
+      x.r := AllocR()
     ELSIF x.mode = RegI THEN
       IF x.type.form = ST.Real THEN
         G.FLdrImm(x.r, x.r, 0)
@@ -129,15 +151,13 @@ BEGIN
         IF x.type.form = ST.ShortInt THEN G.Sxth(RH, RH) END
       END;
       cmpNeeded := TRUE;
-      x.r := RH;
-      IncR
+      x.r := AllocR()
     ELSIF x.mode = Cond THEN
       FixLink(x.b);
       FixLinkWith(x.a, G.Here());
       (* CSINC Xd, xzr, xzr, Negated(x.r) = CSET Xd, x.r *)
       G.CSInc(RH, SP, SP, Negated(x.r));
-      x.r := RH;
-      IncR
+      x.r := AllocR()
     END;
     x.mode := Reg
   END
@@ -146,8 +166,7 @@ END Load;
 PROCEDURE LoadAddr(VAR x: Item);
 BEGIN
   IF x.mode = ST.Var THEN
-    x.r := RH;
-    IncR
+    x.r := AllocR()
   ELSE S.Mark(E.badVarPar)
   END;
   x.mode := Reg
@@ -416,9 +435,8 @@ BEGIN
   IF obj.mode = RegI THEN
     addrReg := obj.r; size := obj.type.size;
     G.LdrImm(RH, addrReg, 0, size);
-    obj.r := RH;
+    obj.r := AllocR();
     obj.mode := Reg;
-    IncR;
     IF n.mode = ST.Const THEN
       IF sub THEN G.AddImm(obj.r, obj.r, -n.a)
       ELSE G.AddImm(obj.r, obj.r, n.a)
@@ -692,16 +710,19 @@ BEGIN
   IF (y.mode = ST.Const) & (y.a >= 0) & (y.a < 1000H) THEN
     Load(x);
     IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
-    ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
+    ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r)
+    END;
     G.CmpImm(x.r, y.a);
     DEC(RH)
   ELSE
     Load(x);
     IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
-    ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r) END;
+    ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r)
+    END;
     Load(y);
     IF y.type.size = 2 THEN G.Sxth(y.r, y.r)
-    ELSIF y.type.size = 4 THEN G.Sxtw(y.r, y.r) END;
+    ELSIF y.type.size = 4 THEN G.Sxtw(y.r, y.r)
+    END;
     G.Cmp(x.r, y.r);
     DEC(RH, 2)
   END;
@@ -1032,52 +1053,55 @@ END Call;
 (** FOR loop support **)
 
 (** Save the FOR end value. If endVal is a constant, just saves the value.
-    If it's in a register, pushes it on the stack. *)
+    If it's in a register, moves it to a callee-saved register. *)
 PROCEDURE ForSave*(VAR endVal: Item; VAR savedConst: INTEGER;
-    VAR onStack: BOOLEAN);
+    VAR endReg: INTEGER);
 BEGIN
   IF endVal.mode = ST.Const THEN
     savedConst := endVal.a;
-    onStack := FALSE
+    endReg := -1
   ELSE
     Load(endVal);
-    G.AddImm(G.SP, G.SP, -16);
-    G.StrImm(endVal.r, G.SP, 0, 8);
-    DEC(RH);
-    onStack := TRUE
+    endReg := AllocS();
+    G.Mov(endReg, endVal.r);
+    DEC(RH)
   END
 END ForSave;
 
 (** Generate FOR loop condition check. Compares loop variable with saved end
     value. step > 0: exits when loopVar > end. step < 0: exits when < end. *)
-PROCEDURE ForCond*(obj: ST.Object; onStack: BOOLEAN;
-    savedConst, step: INTEGER; VAR x: Item);
+PROCEDURE ForCond*(obj: ST.Object;
+    endReg, endConst, step: INTEGER; VAR x: Item);
 VAR loopVar, endItem: Item;
   cond: INTEGER;
 BEGIN
-  MakeItem(loopVar, obj);
-  IF onStack THEN
-    Load(loopVar);
-    IF loopVar.type.size = 2 THEN G.Sxth(loopVar.r, loopVar.r)
-    ELSIF loopVar.type.size = 4 THEN G.Sxtw(loopVar.r, loopVar.r) END;
-    G.LdrImm(RH, G.SP, 0, 8);
-    G.Cmp(loopVar.r, RH);
-    DEC(RH);
-    IF step > 0 THEN cond := LE ELSE cond := GE END;
-    SetCond(loopVar, cond)
-  ELSE
-    MakeConstItem(endItem, obj.type, savedConst);
+  MakeItem(loopVar, obj); (* loadVar.mode = ST.Var *)
+  IF endReg = -1 THEN (* end is a constant *)
+    MakeConstItem(endItem, obj.type, endConst);
     IF step > 0 THEN IntRel(S.leq, loopVar, endItem)
     ELSE IntRel(S.geq, loopVar, endItem)
     END
+  ELSE
+    ASSERT((firstCSReg <= endReg) & (endReg <= maxCSReg));
+    Load(loopVar); (* Allocates a register *)
+    IF loopVar.type.size = 2 THEN G.Sxth(loopVar.r, loopVar.r)
+    ELSIF loopVar.type.size = 4 THEN G.Sxtw(loopVar.r, loopVar.r)
+    END;
+    G.Cmp(loopVar.r, endReg);
+    DEC(RH);
+    IF step > 0 THEN cond := LE ELSE cond := GE END;
+    SetCond(loopVar, cond)
   END;
   x := loopVar
 END ForCond;
 
-(** Clean up the stack after a FOR loop if end value was saved there. *)
-PROCEDURE ForClean*(onStack: BOOLEAN);
+(** Free the callee-saved register after a FOR loop if one was allocated. *)
+PROCEDURE ForClean*(endReg: INTEGER);
 BEGIN
-  IF onStack THEN G.AddImm(G.SP, G.SP, 16) END
+  IF endReg # -1 THEN
+    ASSERT((firstCSReg <= endReg) & (endReg <= maxCSReg));
+    FreeS
+  END
 END ForClean;
 
 (** CASE statement support **)
@@ -1161,5 +1185,18 @@ PROCEDURE Trap*;
 BEGIN
   G.Brk(1)
 END Trap;
+
+PROCEDURE Init*;
+BEGIN
+  RH := 0;
+  SH := firstCSReg;
+
+  G.Init
+END Init;
+
+PROCEDURE Close*;
+BEGIN
+  G.Close
+END Close;
 
 END Emitter.

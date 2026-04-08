@@ -747,8 +747,7 @@ END RepeatStatement;
 PROCEDURE ForStatement;
 VAR obj: ST.Object;
   x, y, endVal, inc: Emitter.Item;
-  step, L, savedConst: INTEGER;
-  onStack: BOOLEAN;
+  step, L, savedConst, savedReg: INTEGER;
 BEGIN
   S.Get(sym);
   IF sym = S.ident THEN
@@ -764,7 +763,7 @@ BEGIN
   END;
   IF sym = S.to THEN S.Get(sym) ELSE S.Mark(E.expTo) END;
   Expr0(endVal);
-  Emitter.ForSave(endVal, savedConst, onStack);
+  Emitter.ForSave(endVal, savedConst, savedReg);
   step := 1;
   IF sym = S.by THEN
     S.Get(sym);
@@ -778,7 +777,7 @@ BEGIN
   END;
   IF sym = S.do THEN S.Get(sym) ELSE S.Mark(E.expDo) END;
   L := Generator.Here();
-  Emitter.ForCond(obj, onStack, savedConst, step, x);
+  Emitter.ForCond(obj, savedReg, savedConst, step, x);
   Emitter.CFJump(x);
   StatSeq0;
   Emitter.MakeItem(inc, obj);
@@ -791,7 +790,7 @@ BEGIN
   END;
   Emitter.BJump(L);
   Emitter.Fixup(x);
-  Emitter.ForClean(onStack);
+  Emitter.ForClean(savedReg);
   IF sym = S.end THEN S.Get(sym) ELSE S.Mark(E.expEnd) END
 END ForStatement;
 
@@ -950,7 +949,7 @@ BEGIN
   ELSE S.Mark(E.expModule)
   END;
   IF ~S.error THEN 
-    Generator.Close;
+    Emitter.Close;
     ST.ExportModule(modName)
   END
 END Module;
@@ -959,7 +958,7 @@ PROCEDURE Compile*(): BOOLEAN;
 BEGIN
   S.Get(sym);
   ST.Init(Lang.curLang);
-  Generator.Init;
+  Emitter.Init;
   Module
 RETURN ~S.error END Compile;
 

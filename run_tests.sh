@@ -55,6 +55,8 @@ echo "  InterOberon Test Suite"
 echo "========================================"
 echo ""
 
+make
+
 # ===================== NEW TESTS =====================
 
 # --- ArithTest: arithmetic operations ---
@@ -300,7 +302,11 @@ run_test "Examples/Tests/ForTest.Mod" "0 1 2 3 4 5
 5050
 1 2 3 
 99
-7"
+7
+11 12 21 22 31 32 
+1332
+112233
+123123"
 
 # --- WhileTest ---
 run_test "Examples/Tests/WhileTest.Mod" "15
