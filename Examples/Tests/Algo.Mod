@@ -1,7 +1,9 @@
 MODULE Algo;
 IMPORT Out;
+CONST
+  MaxArr = 20;
 VAR
-  a: ARRAY 20 OF INTEGER;
+  a: ARRAY MaxArr OF INTEGER;
   i, j, n, tmp: INTEGER;
 BEGIN
   (* 1. GCD using Euclid's algorithm: GCD(48, 18) = 6 *)

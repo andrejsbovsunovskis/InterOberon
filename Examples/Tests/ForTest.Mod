@@ -1,9 +1,11 @@
 MODULE ForTest;
 IMPORT Out;
+CONST
+  MaxI = 5;
 VAR i, j, k, sum, n, m, p: INTEGER;
 BEGIN
-  (* 1. Simple FOR 0 TO 5 *)
-  FOR i := 0 TO 5 DO
+  (* 1. Simple FOR 0 TO MaxI *)
+  FOR i := 0 TO MaxI DO
     Out.Int(i, 0); Out.Char(' ')
   END;
   Out.Ln;

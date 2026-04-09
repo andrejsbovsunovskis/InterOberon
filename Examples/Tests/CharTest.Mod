@@ -1,9 +1,12 @@
 MODULE CharTest;
 IMPORT Out;
+CONST
+  LetterA = 41H;
+  Digit0 = 48;
 VAR c: CHAR; i: INTEGER;
 BEGIN
   (* 1. Char literal 'A' *)
-  c := 'A';
+  c := CHR(LetterA);
   Out.Char(c); Out.Ln;
 
   (* 2. Char literal 'Z' *)
@@ -38,9 +41,9 @@ BEGIN
   IF 'X' # 'Y' THEN Out.Int(1, 0) ELSE Out.Int(0, 0) END;
   Out.Ln;
 
-  (* 10. Print digits using CHR *)
+  (* 10. Print digits using CHR and Digit0 const *)
   FOR i := 0 TO 9 DO
-    Out.Char(CHR(48 + i))
+    Out.Char(CHR(Digit0 + i))
   END;
   Out.Ln;
 

@@ -75,6 +75,7 @@ run_test "Examples/Tests/ArithTest.Mod" "10
 0
 77
 5
+10000
 42
 99
 0
@@ -133,6 +134,8 @@ run_test "Examples/Tests/CompTest.Mod" "1
 1
 1
 0
+1
+1
 1
 1
 1
@@ -463,6 +466,23 @@ run_test "Examples/Tests/Array5.Mod" "100
 66
 77
 -999"
+
+# --- ConstTest: constants ---
+run_test "Examples/Tests/ConstTest.Mod" "10
+-42
+0
+1000000
+255
+A
+110
+90
+100
+10
+2
+58
+1
+55
+5"
 
 # --- CaseNest: nested CASE statements ---
 run_test "Examples/Tests/CaseNest.Mod" "23

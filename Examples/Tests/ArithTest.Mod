@@ -1,9 +1,12 @@
 MODULE ArithTest;
 IMPORT Out;
+CONST
+  Seven = 7;
+  Hundred = 100;
 VAR a, b, r: INTEGER;
 BEGIN
-  (* 1. Addition: 3 + 7 = 10 *)
-  r := 3 + 7;
+  (* 1. Addition: 3 + Seven = 10 *)
+  r := 3 + Seven;
   Out.Int(r, 0); Out.Ln;
 
   (* 2. Subtraction: 20 - 13 = 7 *)
@@ -14,12 +17,12 @@ BEGIN
   r := 6 * 7;
   Out.Int(r, 0); Out.Ln;
 
-  (* 4. DIV: 17 DIV 5 = 3 *)
-  r := 17 DIV 5;
+  (* 4. DIV: 17 DIV Seven-2 = 3 *)
+  r := 17 DIV (Seven - 2);
   Out.Int(r, 0); Out.Ln;
 
-  (* 5. MOD: 17 MOD 5 = 2 *)
-  r := 17 MOD 5;
+  (* 5. MOD: 17 MOD (Seven-2) = 2 *)
+  r := 17 MOD (Seven - 2);
   Out.Int(r, 0); Out.Ln;
 
   (* 6. Negation: -42 *)
@@ -62,6 +65,10 @@ BEGIN
 
   (* 15. Chained operations: ((10 - 3) * 2 + 1) DIV 3 = 5 *)
   r := ((10 - 3) * 2 + 1) DIV 3;
+  Out.Int(r, 0); Out.Ln;
+
+  (* 15b. Const in expression: Hundred * Hundred = 10000 *)
+  r := Hundred * Hundred;
   Out.Int(r, 0); Out.Ln;
 
   (* 16. ABS of positive: ABS(42) = 42 *)

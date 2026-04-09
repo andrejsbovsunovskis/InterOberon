@@ -1,11 +1,13 @@
 MODULE ArrayTest;
 IMPORT Out;
+CONST
+  N = 10;
 VAR
-  a: ARRAY 10 OF INTEGER;
+  a: ARRAY N OF INTEGER;
   i, sum: INTEGER;
 BEGIN
   (* Fill array with squares *)
-  FOR i := 0 TO 9 DO
+  FOR i := 0 TO N - 1 DO
     a[i] := (i + 1) * (i + 1)
   END;
 
@@ -17,7 +19,7 @@ BEGIN
 
   (* Compute sum *)
   sum := 0;
-  FOR i := 0 TO 9 DO
+  FOR i := 0 TO N - 1 DO
     sum := sum + a[i]
   END;
   Out.Int(sum, 0);

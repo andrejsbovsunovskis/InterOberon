@@ -1,9 +1,12 @@
 MODULE CompTest;
 IMPORT Out;
+CONST
+  Five = 5;
+  Limit = 100;
 VAR a, b: INTEGER;
 BEGIN
-  (* 1. Equal: 5 = 5 → 1 *)
-  a := 5; b := 5;
+  (* 1. Equal: Five = Five → 1 *)
+  a := Five; b := Five;
   IF a = b THEN Out.Int(1, 0) ELSE Out.Int(0, 0) END;
   Out.Ln;
 
@@ -70,8 +73,16 @@ BEGIN
   IF 2 * 5 = 10 THEN Out.Int(1, 0) ELSE Out.Int(0, 0) END;
   Out.Ln;
 
-  (* 15. Complex condition: (a > 0) & (a < 100) where a=50 → 1 *)
+  (* 15. Complex condition: (a > 0) & (a < Limit) where a=50 → 1 *)
   a := 50;
-  IF (a > 0) & (a < 100) THEN Out.Int(1, 0) ELSE Out.Int(0, 0) END;
+  IF (a > 0) & (a < Limit) THEN Out.Int(1, 0) ELSE Out.Int(0, 0) END;
+  Out.Ln;
+
+  (* 16. Const vs const: Five = Five → 1 *)
+  IF Five = Five THEN Out.Int(1, 0) ELSE Out.Int(0, 0) END;
+  Out.Ln;
+
+  (* 17. Const vs literal: Five < Limit → 1 *)
+  IF Five < Limit THEN Out.Int(1, 0) ELSE Out.Int(0, 0) END;
   Out.Ln
 END CompTest.
