@@ -1,0 +1,222 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Oberon",
+  "scopeName": "source.oberon",
+  "fileTypes": ["Mod", "mod", "ob", "ob07"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#module-header" },
+    { "include": "#procedure-decl" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#types" },
+    { "include": "#builtins" },
+    { "include": "#export-mark" },
+    { "include": "#operators" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.translation.oberon",
+          "begin": "\\(\\*\\*%",
+          "end": "\\*\\)",
+          "patterns": [
+            {
+              "name": "entity.name.tag.translation-lang.oberon",
+              "match": "%[A-Za-z]{2,5}:"
+            }
+          ]
+        },
+        {
+          "name": "comment.block.doc.oberon",
+          "begin": "\\(\\*\\*",
+          "end": "\\*\\)",
+          "patterns": [
+            { "include": "#comments" }
+          ]
+        },
+        {
+          "name": "comment.block.oberon",
+          "begin": "\\(\\*",
+          "end": "\\*\\)",
+          "patterns": [
+            { "include": "#comments" }
+          ]
+        }
+      ]
+    },
+
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.oberon",
+          "begin": "\"",
+          "end": "\"|$"
+        },
+        {
+          "name": "string.quoted.single.oberon",
+          "begin": "'",
+          "end": "'|$"
+        }
+      ]
+    },
+
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.char.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])[0-9][0-9A-F]*X(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "constant.numeric.hex.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])[0-9][0-9A-F]*H(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "constant.numeric.real.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])[0-9]+\\.[0-9]+(?:[EeDd][+-]?[0-9]+)?(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "constant.numeric.integer.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])[0-9]+(?![\\p{L}\\p{N}_])"
+        }
+      ]
+    },
+
+    "module-header": {
+      "patterns": [
+        {
+          "match": "(?<![\\p{L}\\p{N}_])(MODULE|МОДУЛЬ|MODULIS)(?![\\p{L}\\p{N}_])\\s+([\\p{L}_][\\p{L}\\p{N}_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.module.oberon" },
+            "2": { "name": "entity.name.type.module.oberon" }
+          }
+        }
+      ]
+    },
+
+    "procedure-decl": {
+      "patterns": [
+        {
+          "match": "(?<![\\p{L}\\p{N}_])(PROCEDURE|ПРОЦЕДУРА|PROCEDŪRA)(?![\\p{L}\\p{N}_])\\s+([\\p{L}_][\\p{L}\\p{N}_]*)(\\*|\\-)?",
+          "captures": {
+            "1": { "name": "keyword.control.procedure.oberon" },
+            "2": { "name": "entity.name.function.oberon" },
+            "3": { "name": "storage.modifier.export.oberon" }
+          }
+        }
+      ]
+    },
+
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.module.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])(MODULE|END|BEGIN|IMPORT|МОДУЛЬ|КОНЕЦ|НАЧАЛО|ИМПОРТ|MODULIS|BEIGAS|SĀKUMS|IMPORTĒ)(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "keyword.control.conditional.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])(IF|THEN|ELSIF|ELSE|CASE|OF|ЕСЛИ|ТОГДА|АЕСЛИ|ИНАЧЕ|ВЫБОР|ИЗ|JA|TAD|BETJA|CITĀDI|GADIJUMS|NO)(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "keyword.control.loop.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])(WHILE|DO|REPEAT|UNTIL|FOR|TO|BY|ПОКА|ДЕЛАТЬ|ПОВТОР|ПОКАНЕ|ДЛЯ|ДО|ПО|KAMĒR|DARĪT|ATKĀRTOT|LĪDZ|KATRAM|LIDZ|PA)(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "keyword.control.flow.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])(RETURN|ВОЗВРАТ|ATGRIEZT)(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "storage.type.declaration.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])(VAR|CONST|TYPE|PROCEDURE|ARRAY|ПЕРЕМЕННЫЕ|ПОСТОЯННЫЕ|ТИП|ПРОЦЕДУРА|МАССИВ|MAINĪGIE|KONSTANTES|TIPS|PROCEDŪRA|MASĪVS)(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "keyword.operator.logical.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])(OR|DIV|MOD|IN|ИЛИ|ДЕЛ|ОСТ|В|VAI|DAL|ATL|IEKSH)(?![\\p{L}\\p{N}_])"
+        }
+      ]
+    },
+
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])(TRUE|FALSE|ИСТИНА|ЛОЖЬ|PATIESS|APLAMS)(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "constant.language.nil.oberon",
+          "match": "(?<![\\p{L}\\p{N}_])(NIL)(?![\\p{L}\\p{N}_])"
+        }
+      ]
+    },
+
+    "types": {
+      "name": "support.type.oberon",
+      "match": "(?<![\\p{L}\\p{N}_])(INTEGER|SHORTINT|LONGINT|REAL|LONGREAL|BOOLEAN|CHAR|BYTE|SET|LONGSET|ЦЕЛОЕ|КОРЦЕЛОЕ|ДЛИНЦЕЛОЕ|ВЕЩЕСТ|БУЛЕВ|ЛИТЕРА|БАЙТ|МНОЖ|ДЛИНМНОЖ|VESELAIS|ĪSAISVES|GARAISVES|REĀLAIS|BŪLA|LITERA|BAITS|KOPA|GARAKOPA)(?![\\p{L}\\p{N}_])"
+    },
+
+    "builtins": {
+      "name": "support.function.builtin.oberon",
+      "match": "(?<![\\p{L}\\p{N}_])(ABS|ASR|ASSERT|CHR|DEC|EXCL|FLOOR|FLT|INC|INCL|LEN|LSL|NEW|ODD|ORD|PACK|ROR|UNPK|HALT|COPY|SIZE|SHORT|LONG|АБС|АСП|ЛИТ|УМЕН|ИСКЛ|ЦЕЛ|ВЕЩ|УВЕЛ|ВКЛ|ДЛИНА|ЛСЛ|НЕЧ|ОРД|ЦСП|УКОР|УДЛИН|ABS|ASR|LIT|SAMAZ|IZSL|LEJUP|UZREĀLO|PALIEL|IEKL|GARUMS|LSL|NEPAR|ORD|ROR|ĪSAIS|GARAIS)(?![\\p{L}\\p{N}_])"
+    },
+
+    "export-mark": {
+      "match": "(\\b[\\p{L}_][\\p{L}\\p{N}_]*)([\\*\\-])(?=\\s*[:,;\\)=])",
+      "captures": {
+        "1": { "name": "entity.name.variable.oberon" },
+        "2": { "name": "storage.modifier.export.oberon" }
+      }
+    },
+
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.assignment.oberon",
+          "match": ":="
+        },
+        {
+          "name": "keyword.operator.comparison.oberon",
+          "match": "<=|>=|#|=|<|>"
+        },
+        {
+          "name": "keyword.operator.arithmetic.oberon",
+          "match": "\\+|-|\\*|/"
+        },
+        {
+          "name": "keyword.operator.logical.oberon",
+          "match": "&|~"
+        },
+        {
+          "name": "keyword.operator.range.oberon",
+          "match": "\\.\\."
+        },
+        {
+          "name": "punctuation.separator.oberon",
+          "match": "[,;:|]"
+        },
+        {
+          "name": "punctuation.accessor.oberon",
+          "match": "\\."
+        }
+      ]
+    },
+
+    "identifiers": {
+      "patterns": [
+        {
+          "match": "([\\p{L}_][\\p{L}\\p{N}_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.call.oberon" }
+          }
+        },
+        {
+          "name": "variable.other.oberon",
+          "match": "[\\p{L}_][\\p{L}\\p{N}_]*"
+        }
+      ]
+    }
+  }
+}

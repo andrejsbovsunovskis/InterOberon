@@ -31,6 +31,7 @@ CONST
   divByZero*         = 51;
   badVarPar*         = 52;
 
+  readOnly*          = 53;
   assignConst*       = 59;
   incompatible*      = 60;
   undecl*            = 61;
@@ -50,7 +51,10 @@ CONST
   outOfMemory*       = 113;
 
   unknownKW*         = 114;
-  stringTodo*        = 115;
+
+  stringTooLong*     = 131;
+  incompatibleArray* = 132;
+  illegalRelation*   = 133;
   badTransLang*      = 116;
   expColonTrans*     = 117;
   commentNotClosed*  = 118;
@@ -63,6 +67,9 @@ CONST
   notArray*          = 124;
   indexOutOfBounds*  = 125;
   expConst*          = 127;
+  tooManyParams*     = 128;
+  procNameMismatch*  = 129;
+  outerLocalAccess*  = 130;
 
   (** Compiler message codes **)
   compileOk1*        = 1;

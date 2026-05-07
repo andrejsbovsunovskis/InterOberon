@@ -1,16 +1,16 @@
 MODULE SymTable;
-IMPORT Out, S := Scanner, E := ErrorMsg, Strings, Kernel, L := Lang, M := Machine, Files;
+IMPORT Out, S := Scanner, E := ErrorMsg, Strings, Kernel, L := Lang, M := Machine, Files, Utf8;
 
 CONST
   (** Object Classes **)
-  Head*  = 0;
-  Const* = 1; (** Non-standard procedures also go here *)
-  Var*   = 2; (** Variables and value parameters *)
-  Par*   = 3; (** Var-parameters *)
-  Typ*   = 5;
-  SProc* = 6; (** Standard procedure *)
-  SFunc* = 7; (** Standard functional procedure *)
-  Mod*   = 8;
+  Head*   = 0;
+  Const*  = 1; (** User defined procedures also are constants *)
+  Var*    = 2; (** Variables and value parameters *)
+  VarPar* = 3; (** VAR-parameters *)
+  Typ*    = 5;
+  SProc*  = 6; (** Standard procedure *)
+  SFunc*  = 7; (** Standard functional procedure *)
+  Mod*    = 8;
 
   (** Type Forms **)
   Bool*     = 2;
@@ -25,11 +25,13 @@ CONST
   LongInt*  = 12;
   LongSet*  = 13;
   Array*    = 14;
+  Record*   = 15;
+  String*   = 16; (** String literals and CONST only; not a user-declarable type *)
 
 TYPE
   LONGINT = M.LONGINT;
+  LONGREAL = M.LONGREAL;
 
-  ConstVal* = POINTER TO ConstValDesc;
   Object* = POINTER TO ObjectDesc;
   Type* = POINTER TO TypeDesc;
   Name* = POINTER TO NameDesc;
@@ -46,10 +48,11 @@ TYPE
     next: Lang
   END;
 
-  ConstValDesc* = RECORD
-    intVal*: INTEGER;
-    realVal*: REAL;
-    setVal*: SET
+  StringEntry* = POINTER TO StringEntryDesc;
+  StringEntryDesc* = RECORD
+    bytes*: ARRAY 256 OF CHAR;
+    nChars*: INTEGER; (** CHAR count including final 0X *)
+    next*: StringEntry
   END;
 
   ObjectDesc* = RECORD
@@ -59,13 +62,20 @@ TYPE
     dsc*: Object;
     next*: Object;
     type*: Type;
+    lev*: INTEGER; (** Scope level: 0 - global, > 0 - local *)
     address*: LONGINT; (** Address for variables, number for standard procedures *)
-    constVal*: ConstVal
+    (** class = Const: integers, pool index (String), SET/LONGSET bits, proc offset — all in intVal. *)
+    intVal*: LONGINT;
+    realVal*: LONGREAL;
+    readOnly*: BOOLEAN; (** non-VAR array params and imported variables *)
+    procResolved*: BOOLEAN; (** TRUE once final entry address is recorded *)
+    fixupList*: INTEGER (** Only for procedures. Word position of last unpatched BL, 0 = empty *)
   END;
 
   TypeDesc* = RECORD
     form*: INTEGER;
     len*: INTEGER; (** Array length; nofpars for Proc *)
+    openRank*: INTEGER; (** Number of open array dimensions *)
     nofpars*: INTEGER;
     dsc*: Object;
     base*: Type;
@@ -73,12 +83,17 @@ TYPE
   END;
 
 VAR
-  topScope: Object;
+  topScope*: Object;
   dummy*: Object;
+  curLev*: INTEGER; (** Current scope level: 0 = module, > 0 = procedure *)
 
   (** Standard Types **)
   boolType*, charType*, intType*, setType*, byteType*, realType*, noType*: Type;
   shortIntType*, longIntType*, longSetType*: Type;
+
+  (** Runtime string pool for literals (dedup by content); index for relocations *)
+  strPool*: StringEntry;
+  nofPoolStrings*: INTEGER;
 
   (** - **)
   langs: Lang;
@@ -330,12 +345,37 @@ BEGIN
   p.next := dummy
 END CloseScope;
 
-(** Returns TRUE if types t1 and t2 are assignment-compatible (t1 := t2) *)
+PROCEDURE IncLev*;
+BEGIN INC(curLev)
+END IncLev;
+
+PROCEDURE DecLev*;
+BEGIN DEC(curLev)
+END DecLev;
+
+(** Returns TRUE if t1 and t2 can appear together in a comparison (symmetric, no narrowing check). *)
 PROCEDURE TypesCompatible*(t1, t2: Type): BOOLEAN;
 RETURN (t1.form = t2.form)
     OR (t1.form IN {Int, Byte, ShortInt, LongInt}) & (t2.form IN {Int, Byte, ShortInt, LongInt})
     OR (t1.form IN {Set, LongSet}) & (t2.form IN {Set, LongSet})
 END TypesCompatible;
+
+(** Returns TRUE if src is assignable to dst without explicit narrowing.
+    Rules:
+      BYTE <-> all integer types  (bidirectional special case).
+      ShortInt <= Int <= LongInt  (only widening is implicit; narrowing needs SHORT).
+      Set <= LongSet              (only widening is implicit; narrowing needs SHORT). *)
+PROCEDURE TypeAssignable*(dst, src: Type): BOOLEAN;
+VAR df, sf: INTEGER;
+BEGIN
+  df := dst.form; sf := src.form;
+  RETURN (df = sf)
+    OR (df = Byte) & (sf IN {Byte, ShortInt, Int, LongInt})    (* any int -> BYTE *)
+    OR (sf = Byte) & (df IN {Byte, ShortInt, Int, LongInt})    (* BYTE -> any int *)
+    OR (df = Int)     & (sf = ShortInt)                         (* SHORTINT -> INTEGER *)
+    OR (df = LongInt) & (sf IN {ShortInt, Int})                 (* ShortInt/Int -> LONGINT *)
+    OR (df = LongSet) & (sf = Set)                              (* SET -> LONGSET *)
+END TypeAssignable;
 
 PROCEDURE ThisObject*(): Object;
 VAR scope, p: Object;
@@ -382,7 +422,10 @@ BEGIN
     p.next := dummy;
     p.class := class;
     p.exported := FALSE;
+    p.lev := curLev;
     p.names := NIL;
+    p.procResolved := FALSE;
+    p.fixupList := 0;
     SetName(p.names, name);
     dummy.names := NIL
   ELSE S.Mark(E.multipleDecl); p := p.next
@@ -396,23 +439,34 @@ VAR p: Object;
 BEGIN
   (* In.Char *)
   NEW(M.dsc); M := M.dsc;
-  M.class := Const; M.address := 1;
+  M.class := Const; M.address := -1; M.intVal := M.address; M.procResolved := TRUE;
   L.FindModObj(num, 'Char', s); SetName(M.names, s);
   NEW(M.type); M.type.form := Proc;
   M.type.nofpars := 1; M.type.base := noType;
   (* Parameter of In.Char *)
   NEW(M.type.dsc); p := M.type.dsc;
-  p.class := Par; SetName(p.names, 'c'); p.type := charType;
+  p.class := VarPar; SetName(p.names, 'c'); p.type := charType;
 
   (* In.Int *)
   NEW(M.next); M := M.next;
-  M.class := Const; M.address := 2;
+  M.class := Const; M.address := -2; M.intVal := M.address; M.procResolved := TRUE;
   L.FindModObj(num, 'Int', s); SetName(M.names, s);
   NEW(M.type); M.type.form := Proc;
   M.type.nofpars := 1; M.type.base := noType;
   (* Parameter of In.Int *)
   NEW(M.type.dsc); p := M.type.dsc;
-  p.class := Par; SetName(p.names, 'i'); p.type := intType
+  p.class := VarPar; SetName(p.names, 'i'); p.type := intType;
+
+  (* In.Line — open ARRAY OF CHAR by VAR reference, hidden length *)
+  NEW(M.next); M := M.next;
+  M.class := Const; M.address := -3; M.intVal := M.address; M.procResolved := TRUE;
+  L.FindModObj(num, 'Line', s); SetName(M.names, s);
+  NEW(M.type); M.type.form := Proc;
+  M.type.nofpars := 1; M.type.base := noType;
+  NEW(M.type.dsc); p := M.type.dsc;
+  p.class := VarPar; SetName(p.names, 'name');
+  NEW(p.type); p.type.form := Array; p.type.base := charType;
+  p.type.len := 0; p.type.size := 8; p.type.openRank := 1
 END ImportIn;
 
 (** num is Lang-internal number of module M *)
@@ -422,7 +476,7 @@ VAR p: Object;
 BEGIN
   (* Out.Char *)
   NEW(M.dsc); M := M.dsc;
-  M.class := Const; M.address := 5;
+  M.class := Const; M.address := -5; M.intVal := M.address; M.procResolved := TRUE;
   L.FindModObj(num, 'Char', s); SetName(M.names, s);
   NEW(M.type); M.type.form := Proc;
   M.type.nofpars := 1; M.type.base := noType;
@@ -430,21 +484,32 @@ BEGIN
   NEW(M.type.dsc); p := M.type.dsc;
   p.class := Var; SetName(p.names, 'c'); p.type := charType;
 
+  (* Out.String — open ARRAY OF CHAR by reference (VarPar read-only), hidden length *)
+  NEW(M.next); M := M.next;
+  M.class := Const; M.address := -10; M.intVal := M.address; M.procResolved := TRUE;
+  L.FindModObj(num, 'String', s); SetName(M.names, s);
+  NEW(M.type); M.type.form := Proc;
+  M.type.nofpars := 1; M.type.base := noType;
+  NEW(M.type.dsc); p := M.type.dsc;
+  p.class := VarPar; p.readOnly := TRUE; SetName(p.names, 's');
+  NEW(p.type); p.type.form := Array; p.type.base := charType;
+  p.type.len := 0; p.type.size := 8; p.type.openRank := 1;
+
   (* Out.Int *)
   NEW(M.next); M := M.next;
-  M.class := Const; M.address := 6;
+  M.class := Const; M.address := -6; M.intVal := M.address; M.procResolved := TRUE;
   L.FindModObj(num, 'Int', s); SetName(M.names, s);
   NEW(M.type); M.type.form := Proc;
   M.type.nofpars := 2; M.type.base := noType;
   (* Parameters of Out.Int *)
   NEW(M.type.dsc); p := M.type.dsc;
-  p.class := Var; SetName(p.names, 'i'); p.type := intType;
+  p.class := Var; SetName(p.names, 'i'); p.type := longIntType;
   NEW(p.next); p := p.next;
   p.class := Var; SetName(p.names, 'n'); p.type := intType;
 
   (* Out.Ln *)
   NEW(M.next); M := M.next;
-  M.class := Const; M.address := 7;
+  M.class := Const; M.address := -7; M.intVal := M.address; M.procResolved := TRUE;
   L.FindModObj(num, 'Ln', s); SetName(M.names, s);
   NEW(M.type); M.type.form := Proc;
   M.type.nofpars := 0; M.type.base := noType
@@ -565,10 +630,109 @@ BEGIN
   END
 END AddLang;
 
+PROCEDURE ResetStringPool*;
+BEGIN strPool := NIL; nofPoolStrings := 0
+END ResetStringPool;
+
+PROCEDURE PoolEntry*(idx: INTEGER): StringEntry;
+VAR e: StringEntry;
+  i: INTEGER;
+BEGIN
+  e := strPool;
+  i := 0;
+  WHILE (e # NIL) & (i # idx) DO e := e.next; INC(i) END
+RETURN e END PoolEntry;
+
+PROCEDURE PoolBytesEqual(s: ARRAY OF CHAR; charLen: INTEGER; e: StringEntry): BOOLEAN;
+VAR i: INTEGER;
+  ok: BOOLEAN;
+BEGIN
+  ok := TRUE;
+  IF (e = NIL) OR (e.nChars # charLen + 1) THEN ok := FALSE END;
+  IF ok THEN
+    i := 0;
+    WHILE (i < charLen) & ok DO
+      IF s[i] # e.bytes[i] THEN ok := FALSE END;
+      INC(i)
+    END
+  END;
+  IF ok & (e # NIL) & (e.bytes[charLen] # 0X) THEN ok := FALSE END;
+RETURN ok END PoolBytesEqual;
+
+PROCEDURE RegisterString*(s: ARRAY OF CHAR; charLen: INTEGER): INTEGER;
+VAR e, tail: StringEntry;
+  i, idx, res, hit, nscan: INTEGER;
+BEGIN
+  idx := 0;
+  hit := -1;
+  nscan := nofPoolStrings;
+  WHILE idx < nscan DO
+    e := PoolEntry(idx);
+    IF PoolBytesEqual(s, charLen, e) THEN
+      IF hit < 0 THEN hit := idx END
+    END;
+    INC(idx)
+  END;
+  IF hit >= 0 THEN
+    res := hit
+  ELSE
+    NEW(e);
+    i := 0;
+    WHILE i < charLen DO e.bytes[i] := s[i]; INC(i) END;
+    e.bytes[charLen] := 0X;
+    e.nChars := charLen + 1;
+    e.next := NIL;
+    res := nofPoolStrings;
+    IF strPool = NIL THEN strPool := e
+    ELSE
+      tail := strPool;
+      WHILE tail.next # NIL DO tail := tail.next END;
+      tail.next := e
+    END;
+    INC(nofPoolStrings)
+  END
+RETURN res END RegisterString;
+
+PROCEDURE MakeStringType*(charLen: INTEGER): Type;
+VAR T: Type;
+BEGIN
+  NEW(T);
+  T.form := String;
+  T.len := charLen + 1;
+  T.size := (charLen + 1) * 2;
+  T.openRank := 0;
+  T.base := NIL
+RETURN T END MakeStringType;
+
+PROCEDURE IsCharArrayType*(t: Type): BOOLEAN;
+BEGIN
+RETURN (t # NIL) & (t.form = Array) & (t.base = charType)
+END IsCharArrayType;
+
+(** Append STRP section to rider R: pool count, then each literal as UTF-8 bytes + 0X (no per-string length prefix). *)
+PROCEDURE WriteStrpSection*(VAR R: Files.Rider);
+VAR e: StringEntry;
+  i, utf8len: INTEGER;
+  u8: ARRAY 1024 OF Utf8.SHORTCHAR;
+BEGIN
+  Files.WriteInt(R, nofPoolStrings);
+  e := strPool;
+  WHILE e # NIL DO
+    Utf8.EncodeEx(e.bytes, e.nChars - 1, u8, utf8len);
+    IF Utf8.Done THEN
+      i := 0;
+      WHILE i <= utf8len DO Files.Write(R, ORD(u8[i])); INC(i) END
+    ELSE
+      Files.Write(R, 0)
+    END;
+    e := e.next
+  END
+END WriteStrpSection;
+
 (** Export module symbols to .sym file *)
 PROCEDURE ExportModule*(modNames: Name);
 CONST
-  version = 1;
+  version = 3;
   symFileMark = ORD('S') + 256 * (ORD('Y') + 256 * (ORD('M') + 256 * version));
   endMark = -1;
 VAR
@@ -577,6 +741,9 @@ VAR
   fname: ARRAY 256 OF CHAR;
   s: ARRAY 64 OF CHAR;
   p: Object;
+  pe: StringEntry;
+  i, utf8len: INTEGER;
+  u8: ARRAY 1024 OF Utf8.SHORTCHAR;
 BEGIN
   (* Create .sym file *)
   Strings.Copy(M.outDir, fname); Strings.Append(modNames.str, fname);
@@ -602,7 +769,21 @@ BEGIN
 
         IF p.type # NIL THEN
           Files.WriteNum(R, p.type.form);
-          Files.WriteNum(R, p.type.size)
+          Files.WriteNum(R, p.type.size);
+          IF (p.class = Const) & (p.type.form = String) THEN
+            pe := PoolEntry(M.SHORT(p.intVal));
+            IF pe # NIL THEN
+              Utf8.EncodeEx(pe.bytes, pe.nChars - 1, u8, utf8len);
+              IF Utf8.Done THEN
+                i := 0;
+                WHILE i <= utf8len DO Files.Write(R, ORD(u8[i])); INC(i) END
+              ELSE
+                Files.Write(R, 0)
+              END
+            ELSE
+              Files.Write(R, 0)
+            END
+          END
         ELSE
           Files.WriteNum(R, NoTyp);
           Files.WriteNum(R, 0);
@@ -622,7 +803,9 @@ END ExportModule;
 PROCEDURE Init*(curLang: ARRAY OF CHAR);
 BEGIN
   AddLang(curLang);
+  ResetStringPool;
 
+  curLev := 0;
   NEW(dummy);
   OpenScope;
   InitUniverse;
@@ -631,10 +814,12 @@ END Init;
 
 PROCEDURE CreateType(form, size: INTEGER): Type;
 VAR T: Type;
-BEGIN NEW(T); T.form := form; T.size := size
+BEGIN NEW(T); T.form := form; T.size := size; T.openRank := 0
 RETURN T END CreateType;
 
 BEGIN
+  strPool := NIL;
+  nofPoolStrings := 0;
   boolType     := CreateType(Bool    , 1);
   charType     := CreateType(Char    , 2);
   intType      := CreateType(Int     , 4);

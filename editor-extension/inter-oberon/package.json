@@ -1,0 +1,30 @@
+{
+  "name": "inter-oberon",
+  "displayName": "InterOberon",
+  "description": "Syntax highlighting for InterOberon (.Mod) — supports English, Russian and Latvian keywords.",
+  "version": "0.1.0",
+  "publisher": "andrejsbovsunovskis",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "oberon",
+        "aliases": ["Oberon", "InterOberon", "oberon"],
+        "extensions": [".Mod", ".mod", ".ob", ".ob07"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "oberon",
+        "scopeName": "source.oberon",
+        "path": "./syntaxes/oberon.tmLanguage.json"
+      }
+    ]
+  }
+}

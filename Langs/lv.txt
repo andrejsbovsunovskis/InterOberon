@@ -25,6 +25,9 @@ CASE=GADIJUMS
 OF=NO
 ARRAY=MASĪVS
 CONST=KONSTANTES
+TYPE=TIPS
+PROCEDURE=PROCEDŪRA
+RETURN=ATGRIEZT
 
 [universe]
 CHAR=LITERA
@@ -56,6 +59,7 @@ LONG=GARAIS
 [Out]
 =Izvade
 Char=Litera
+String=Virkne
 Int=Veselais
 Ln=Pārnese
 
@@ -63,6 +67,8 @@ Ln=Pārnese
 =Ievade
 Char=Litera
 Int=Veselais
+Line=Rinda
+String=Leksēma
 
 [errors]
 1=Tiek gaidīts MODULIS
@@ -91,6 +97,7 @@ Int=Veselais
 50=Dalītājs nav pozitīvs
 51=Dalīšana ar nulli
 52=Nekorekts var-parametrs
+53=Mainīgais ir tikai lasāms
 59=Piešķiršana konstantē
 60=Tipi ir nesaderīgi
 61=Nedeklarēts vārds
@@ -109,10 +116,15 @@ Int=Veselais
 124=Šis nav masīvs
 125=Indekss ārpus robežām
 127=Tiek gaidīts constants izteiksme
+128=Pārāk daudz parametru (maks. 8)
+129=Procedūras nosaukums nesakrīt
+130=Nevar piekļūt ārējās procedūras lokālajiem mainīgajiem
 112=Reģistru steka pārpilde
 113=Atmiņas trūkums
 114=Nezināms atslēgas vārds (kļūda valodas datnē))
-115=Virkņu literāļi nav realizēti
+131=Virkne ir pārāk gara šim masīvam
+132=Nesaderīgi masīvu tipi
+133=Šī attiecība nav definēta šiem tipiem
 116=Nederīgs valodas kods tulkojuma komentārā
 117=Tiek gaidīts kols tulkojuma komentārā
 118=Komentārs nav aizvērts

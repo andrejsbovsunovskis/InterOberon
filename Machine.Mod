@@ -3,9 +3,11 @@ IMPORT Out, Lang, Platform, Utf8, Strings, SYSTEM;
 
 TYPE
   LONGINT* = SYSTEM.INT64;
+  LONGREAL* = REAL; (*!FIXME*)
   SHORTCHAR = Utf8.SHORTCHAR;
 
 VAR
+  maxLongInt*, minLongInt*: LONGINT;
   outDir*, outExe*: ARRAY 256 OF CHAR;
 
 (** Run a command in the OS. For chmod and signing the executable. *)
@@ -91,6 +93,49 @@ END WriteErrorI;
 PROCEDURE SHORT*(x: LONGINT): INTEGER;
 RETURN SYSTEM.VAL(INTEGER, x) END SHORT;
 
+PROCEDURE LONG*(x: INTEGER): LONGINT;
+RETURN SYSTEM.VAL(LONGINT, x) END LONG;
+
+PROCEDURE Pow2L(n: INTEGER): LONGINT;
+VAR r: LONGINT;
+BEGIN
+  r := SYSTEM.VAL(LONGINT, 1);
+  WHILE n > 0 DO r := r * SYSTEM.VAL(LONGINT, 2); DEC(n) END
+RETURN r END Pow2L;
+
+PROCEDURE LSL64*(x: LONGINT; n: INTEGER): LONGINT;
+BEGIN
+  IF n >= 64 THEN x := SYSTEM.VAL(LONGINT, 0)
+  ELSIF n > 0 THEN x := x * Pow2L(n)
+  END
+RETURN x END LSL64;
+
+PROCEDURE ASR64*(x: LONGINT; n: INTEGER): LONGINT;
+BEGIN
+  IF n >= 64 THEN
+    IF x < SYSTEM.VAL(LONGINT, 0) THEN x := SYSTEM.VAL(LONGINT, -1)
+    ELSE x := SYSTEM.VAL(LONGINT, 0)
+    END
+  ELSIF n > 0 THEN x := x DIV Pow2L(n)
+  END
+RETURN x END ASR64;
+
+PROCEDURE ROR64*(x: LONGINT; n: INTEGER): LONGINT;
+VAR i: INTEGER;
+  bit: LONGINT;
+  one, zero: LONGINT;
+BEGIN
+  one := SYSTEM.VAL(LONGINT, 1);
+  zero := SYSTEM.VAL(LONGINT, 0);
+  n := n MOD 64;
+  FOR i := 1 TO n DO
+    bit := x - (x DIV SYSTEM.VAL(LONGINT, 2)) * SYSTEM.VAL(LONGINT, 2);
+    x := x DIV SYSTEM.VAL(LONGINT, 2);
+    IF x < zero THEN x := x + Pow2L(63) END;
+    IF bit # zero THEN x := x + Pow2L(63) END
+  END
+RETURN x END ROR64;
+
 PROCEDURE SetOutDir*(path: ARRAY OF CHAR);
 VAR n, i, last: INTEGER;
 BEGIN
@@ -117,6 +162,8 @@ BEGIN
 END SetOutDir;
 
 BEGIN
+  maxLongInt := LSL64(LONG(7FFFFFFFH), 32) + LONG(7FFFFFFFH) * 2 + 1;
+  minLongInt := -maxLongInt - 1;
   outDir := '';
   outExe := ''
 END Machine.

@@ -1,9 +1,10 @@
 MODULE Parser;
 IMPORT S := Scanner, ST := SymTable, E := ErrorMsg, Strings,
-  Generator, Emitter, Out, Lang, M := Machine;
+  Generator, Emitter, Out, Lang, M := Machine, SYSTEM;
 
 TYPE
   LONGINT = M.LONGINT;
+  LONGREAL = M.LONGREAL;
 
 VAR
   sym: INTEGER;
@@ -12,6 +13,10 @@ VAR
 
   Expr0: PROCEDURE(VAR x: Emitter.Item);
   StatSeq0: PROCEDURE;
+  Type0: PROCEDURE(VAR T: ST.Type);
+  FormalType0: PROCEDURE(VAR T: ST.Type);
+
+  allowOpenArrayParams: BOOLEAN;
 
   modName: ST.Name; (** Names of last compiled module *)
 
@@ -69,7 +74,129 @@ BEGIN
   IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END
 END ImportList;
 
-(** Type = ident | ARRAY expr {"," expr} OF Type. *)
+PROCEDURE FormalType(VAR T: ST.Type);
+VAR x: Emitter.Item;
+  elemType: ST.Type;
+  dims: ARRAY 8 OF INTEGER;
+  n, i: INTEGER;
+BEGIN
+  IF sym = S.array THEN
+    S.Get(sym);
+    IF sym = S.of THEN
+      IF ~allowOpenArrayParams THEN S.Mark(E.incompatible) END;
+      S.Get(sym);
+      FormalType(elemType);
+      NEW(T);
+      T.form := ST.Array;
+      T.base := elemType;
+      T.len := 0;
+      T.size := 8;
+      T.openRank := elemType.openRank + 1
+    ELSE
+      Expr0(x);
+      IF x.mode # ST.Const THEN S.Mark(E.expConst); x.a := 1 END;
+      dims[0] := M.SHORT(x.a); n := 1;
+      WHILE (sym = S.comma) & (n < 8) DO
+        S.Get(sym);
+        Expr0(x);
+        IF x.mode # ST.Const THEN S.Mark(E.expConst); x.a := 1 END;
+        dims[n] := M.SHORT(x.a); INC(n)
+      END;
+      IF sym = S.of THEN S.Get(sym) ELSE S.Mark(E.expOf) END;
+      FormalType(elemType);
+      i := n - 1;
+      WHILE i >= 0 DO
+        NEW(T);
+        T.form := ST.Array;
+        T.base := elemType;
+        T.len := dims[i];
+        T.size := dims[i] * elemType.size;
+        T.openRank := elemType.openRank;
+        elemType := T;
+        DEC(i)
+      END
+    END
+  ELSE
+    Type0(T)
+  END
+END FormalType;
+
+(** FPSection = [VAR] ident {"," ident} ":" FormalType. *)
+PROCEDURE FPSection(VAR nofPars: INTEGER);
+VAR class: INTEGER;
+  first, p: ST.Object;
+  T: ST.Type;
+BEGIN
+  IF sym = S.var THEN class := ST.VarPar; S.Get(sym) ELSE class := ST.Var END;
+  IF sym = S.ident THEN
+    first := ST.NewObject(class, S.id);
+    first.address := 16 + nofPars * 8; INC(nofPars);
+    S.Get(sym);
+    WHILE sym = S.comma DO
+      S.Get(sym);
+      IF sym = S.ident THEN
+        IF nofPars >= 8 THEN S.Mark(E.tooManyParams) END;
+        p := ST.NewObject(class, S.id);
+        p.address := 16 + nofPars * 8; INC(nofPars);
+        S.Get(sym)
+      ELSE S.Mark(E.expIdent)
+      END
+    END;
+    IF sym = S.colon THEN S.Get(sym) ELSE S.Mark(E.expColon) END;
+    FormalType0(T);
+    p := first;
+    WHILE p # ST.dummy DO
+      p.type := T;
+      IF (class = ST.Var) & (T.form = ST.Array) THEN
+        p.class := ST.VarPar; p.readOnly := TRUE
+      END;
+      p := p.next
+    END
+  ELSE S.Mark(E.expIdent)
+  END
+END FPSection;
+
+(** ProcedureType = PROCEDURE ["(" [FPSection {";" FPSection}] ")"]
+                    [":" Type]. *)
+PROCEDURE ProcedureType(VAR T: ST.Type);
+VAR n: INTEGER;
+  oldOpen: BOOLEAN;
+BEGIN
+  S.Get(sym);
+  NEW(T);
+  T.form := ST.Proc;
+  T.size := 8;
+  T.openRank := 0;
+  T.base := ST.noType;
+  T.nofpars := 0;
+  T.dsc := NIL;
+  oldOpen := allowOpenArrayParams;
+  allowOpenArrayParams := FALSE;
+  IF sym = S.lparen THEN
+    S.Get(sym);
+    ST.OpenScope;
+    n := 0;
+    IF sym # S.rparen THEN
+      FPSection(n);
+      WHILE sym = S.semicol DO
+        S.Get(sym);
+        FPSection(n)
+      END
+    END;
+    T.nofpars := n;
+    T.dsc := ST.topScope.next;
+    ST.CloseScope;
+    IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END
+  END;
+  allowOpenArrayParams := oldOpen;
+  IF sym = S.colon THEN
+    S.Get(sym);
+    Type0(T.base)
+  END
+END ProcedureType;
+
+(** Type = ident | ARRAY expr {"," expr} OF Type |
+           PROCEDURE ["(" [FPSection {";" FPSection}] ")"]. *)
 PROCEDURE Type(VAR T: ST.Type);
 VAR p: ST.Object;
   x: Emitter.Item;
@@ -92,12 +219,12 @@ BEGIN
     S.Get(sym);
     Expr0(x);
     IF x.mode # ST.Const THEN S.Mark(E.expConst); x.a := 1 END;
-    dims[0] := x.a; n := 1;
+    dims[0] := M.SHORT(x.a); n := 1;
     WHILE (sym = S.comma) & (n < 8) DO
       S.Get(sym);
       Expr0(x);
       IF x.mode # ST.Const THEN S.Mark(E.expConst); x.a := 1 END;
-      dims[n] := x.a; INC(n)
+      dims[n] := M.SHORT(x.a); INC(n)
     END;
     IF sym = S.of THEN S.Get(sym) ELSE S.Mark(E.expOf) END;
     Type(elemType);
@@ -107,10 +234,13 @@ BEGIN
       T.form := ST.Array;
       T.base := elemType; (* Wrap around *)
       T.len := dims[i];
+      T.openRank := 0;
       T.size := dims[i] * elemType.size;
       elemType := T;
       DEC(i)
     END
+  ELSIF sym = S.procedure THEN
+    ProcedureType(T)
   ELSE S.Mark(E.expIdent)
   END
 END Type;
@@ -124,6 +254,26 @@ BEGIN
     exported := FALSE
   END
 END CheckExport;
+
+(** Alignment of T in bytes: scalar = T.size, array = alignment of element,
+    record = max alignment of fields. *)
+PROCEDURE Alignment(T: ST.Type): INTEGER;
+VAR a, fa: INTEGER;
+  field: ST.Object;
+BEGIN
+  WHILE T.form = ST.Array DO T := T.base END;
+  IF T.form = ST.Record THEN
+    a := 1;
+    field := T.dsc;
+    WHILE (field # NIL) & (field # ST.dummy) DO
+      fa := Alignment(field.type);
+      IF fa > a THEN a := fa END;
+      field := field.next
+    END
+  ELSE
+    a := T.size
+  END
+RETURN a END Alignment;
 
 (** VarDecl = IdentList ":" Type. *)
 PROCEDURE VarDecl(VAR firstObj: ST.Object);
@@ -148,11 +298,9 @@ BEGIN
   IF sym = S.colon THEN ELSE S.Mark(E.expColon) END;
   S.Get(sym);
   Type(T);
+  align := Alignment(T);
   REPEAT
     p.type := T;
-    IF T.form = ST.Array THEN align := T.base.size
-    ELSE align := T.size
-    END;
     IF align > 1 THEN
       varsize := (varsize + align - 1) DIV align * align
     END;
@@ -170,19 +318,43 @@ BEGIN
   IF sym = S.ident THEN
     p := ST.NewObject(ST.Const, S.id);
     S.Get(sym);
+    CheckExport(p.exported);
     IF sym = S.eql THEN S.Get(sym)
     ELSE S.Mark(E.expEql)
     END;
     Expr0(x);
     IF x.mode # ST.Const THEN S.Mark(E.expConst); x.mode := ST.Const; x.a := 0 END;
-    NEW(p.constVal);
-    p.constVal.intVal := x.a;
+    p.intVal := 0;
+    IF (x.type # NIL) & (x.type.form = ST.Real) THEN
+      p.realVal := SYSTEM.VAL(LONGREAL, SYSTEM.VAL(REAL, M.SHORT(x.a)))
+    ELSE
+      p.intVal := x.a
+    END;
     p.type := x.type
   ELSE S.Mark(E.expIdent)
   END
 END ConstDecl;
 
-(** DeclSeq = [CONST {ConstDecl ";"}] [VAR {VarDecl ";"}]. *)
+(** TypeDecl = ident "=" Type. *)
+PROCEDURE TypeDecl;
+VAR p: ST.Object;
+  T: ST.Type;
+BEGIN
+  IF sym = S.ident THEN
+    p := ST.NewObject(ST.Typ, S.id);
+    S.Get(sym);
+    CheckExport(p.exported);
+    IF sym = S.eql THEN S.Get(sym)
+    ELSE S.Mark(E.expEql)
+    END;
+    Type(T);
+    p.type := T
+  ELSE S.Mark(E.expIdent)
+  END
+END TypeDecl;
+
+(** DeclSeq = [CONST {ConstDecl ";"}] [TYPE {TypeDecl ";"}]
+             [VAR {VarDecl ";"}] {ProcedureDecl ";"}. *)
 PROCEDURE DeclSeq;
 VAR firstVar, p: ST.Object;
   i, j: INTEGER;
@@ -205,11 +377,138 @@ VAR firstVar, p: ST.Object;
     name[k] := 0X
   END ReadTrans;
 
+  (** ProcedureDecl = ProcedureHeading ";" ProcedureBody ident. *)
+  PROCEDURE ProcedureDecl;
+  VAR proc: ST.Object;
+    procType: ST.Type;
+    procName: ST.Name;
+    savedVarSize, nofPars, totalPars, parSize, frameSize: INTEGER;
+    oldOpen: BOOLEAN;
+    nameStr: ARRAY 64 OF CHAR;
+    x: Emitter.Item;
+
+    PROCEDURE AssignParamAddresses(VAR total: INTEGER);
+    VAR p: ST.Object;
+      slot: INTEGER;
+    BEGIN
+      slot := 0;
+      p := ST.topScope.next;
+      WHILE p # ST.dummy DO
+        p.address := 16 + slot * 8;
+        INC(slot, p.type.openRank + 1); (* one for pointer, one for each hidden length *)
+        p := p.next
+      END;
+      total := slot
+    END AssignParamAddresses;
+
+  BEGIN
+    S.Get(sym); (* consume PROCEDURE token *)
+    IF sym = S.ident THEN
+      (* Create procedure object in current (outer) scope *)
+      proc := ST.NewObject(ST.Const, S.id);
+      procName := NIL; ST.SetName(procName, S.id);
+      S.Get(sym);
+
+      (* Create procedure type *)
+      NEW(procType);
+      procType.form := ST.Proc;
+      procType.openRank := 0;
+      procType.base := ST.noType;
+      procType.nofpars := 0;
+      proc.type := procType;
+
+      (* Open scope for parameters and locals *)
+      ST.OpenScope;
+      ST.IncLev;
+      nofPars := 0;
+
+      (* Parse formal parameters *)
+      oldOpen := allowOpenArrayParams;
+      allowOpenArrayParams := TRUE;
+      IF sym = S.lparen THEN
+        S.Get(sym);
+        IF sym # S.rparen THEN
+          FPSection(nofPars);
+          WHILE sym = S.semicol DO
+            S.Get(sym);
+            FPSection(nofPars)
+          END
+        END;
+        IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END
+      END;
+      AssignParamAddresses(totalPars);
+      IF totalPars > 8 THEN S.Mark(E.tooManyParams) END;
+      allowOpenArrayParams := oldOpen;
+      parSize := totalPars * 8;
+      procType.nofpars := nofPars;
+      procType.dsc := ST.topScope.next; (* link to first parameter *)
+
+      (* Parse return type *)
+      IF sym = S.colon THEN
+        S.Get(sym);
+        Type(procType.base)
+      END;
+
+      IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END;
+
+      (* Parse local declarations *)
+      savedVarSize := varsize; (* save to restore later *)
+      varsize := 16 + parSize; (* locals start after saved FP/LR + params *)
+      DeclSeq;
+
+      (* Record entry point: nested procedures are now behind us, prologue
+         comes next. Resolve any forward-reference fixups (e.g. nested
+         procs that called this one before its address was known). *)
+      proc.address := Generator.Here();
+      Emitter.ResolveProc(proc);
+
+      (* Emit prologue *)
+      frameSize := (varsize + 15) DIV 16 * 16; (* 16-byte align *)
+      Emitter.ProcPrologue(frameSize, totalPars, parSize);
+
+      (* Parse body *)
+      IF sym = S.begin THEN S.Get(sym); StatSeq0 END;
+
+      (* Parse RETURN expression *)
+      IF sym = S.return THEN
+        S.Get(sym);
+        IF procType.base.form = ST.NoTyp THEN S.Mark(E.incompatible) END;
+        Expr0(x);
+        Emitter.ReturnVal(x)
+      END;
+
+      Emitter.ProcEpilogue(frameSize);
+      ST.CloseScope;
+      ST.DecLev;
+      varsize := savedVarSize; (* restore *)
+
+      (* Check END ident *)
+      IF sym = S.end THEN
+        S.Get(sym);
+        IF sym = S.ident THEN
+          ST.GetName(procName, nameStr);
+          IF nameStr # S.id THEN S.Mark(E.procNameMismatch) END;
+          S.Get(sym)
+        ELSE S.Mark(E.expIdent)
+        END
+      ELSE S.Mark(E.expEnd)
+      END
+    ELSE S.Mark(E.expIdent)
+    END
+  END ProcedureDecl;
+
 BEGIN
   IF sym = S.const THEN
     S.Get(sym);
     WHILE sym = S.ident DO
       ConstDecl;
+      IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END
+    END
+  END;
+  IF sym = S.type THEN
+    S.Get(sym);
+    WHILE sym = S.ident DO
+      TypeDecl;
       IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END
     END
   END;
@@ -232,6 +531,10 @@ BEGIN
         END
       END
     END
+  END;
+  WHILE sym = S.procedure DO
+    ProcedureDecl;
+    IF sym = S.semicol THEN S.Get(sym) ELSE S.Mark(E.expSemicol) END
   END
 END DeclSeq;
 
@@ -272,81 +575,151 @@ BEGIN
   END
 END QualIdent;
 
+PROCEDURE LenDesignator(VAR x: Emitter.Item; VAR depth: INTEGER);
+VAR obj: ST.Object;
+  y: Emitter.Item;
+BEGIN
+  depth := 0;
+  QualIdent(obj);
+  Emitter.MakeItem(x, obj);
+  WHILE sym = S.lbrak DO
+    S.Get(sym);
+    Expr0(y);
+    CheckInt(y);
+    IF y.mode # ST.Const THEN S.Mark(E.expConst) END;
+    INC(depth);
+    IF x.type.form = ST.Array THEN x.type := x.type.base
+    ELSE S.Mark(E.notArray)
+    END;
+    WHILE sym = S.comma DO
+      S.Get(sym);
+      Expr0(y);
+      CheckInt(y);
+      IF y.mode # ST.Const THEN S.Mark(E.expConst) END;
+      INC(depth);
+      IF x.type.form = ST.Array THEN x.type := x.type.base
+      ELSE S.Mark(E.notArray)
+      END
+    END;
+    IF sym = S.rbrak THEN S.Get(sym) ELSE S.Mark(E.expRbrak) END
+  END
+END LenDesignator;
+
+(** String literal / single-char string CONST (form String): fold to CHAR for ORD, Out.Char, CASE, etc. *)
+PROCEDURE FoldStringConstToChar(VAR x: Emitter.Item);
+VAR pe: ST.StringEntry;
+  n: INTEGER;
+BEGIN
+  IF (x.mode = ST.Const) & (x.type.form = ST.String) THEN
+    n := x.type.len - 1; (* character count; type.len = charLen+1 from MakeStringType *)
+    IF n = 1 THEN
+      pe := ST.PoolEntry(M.SHORT(x.a));
+      IF pe # NIL THEN Emitter.MakeConstItem(x, ST.charType, ORD(pe.bytes[0])) END
+    ELSIF n = 0 THEN
+      Emitter.MakeConstItem(x, ST.charType, 0)
+    ELSE
+      S.Mark(E.incompatible)
+    END
+  END
+END FoldStringConstToChar;
+
 PROCEDURE StandFunc(VAR x: Emitter.Item; func: INTEGER; resType: ST.Type);
 VAR y: Emitter.Item;
-  n: INTEGER;
+  n, depth, lenAddr: INTEGER;
   is2arg: BOOLEAN;
 BEGIN
   is2arg := (func >= 35) & (func <= 37);
   IF sym = S.lparen THEN
     S.Get(sym);
-    Expr0(x);
-    n := 1;
-    WHILE sym = S.comma DO
-      S.Get(sym);
-      Expr0(y);
-      INC(n)
-    END;
-    IF is2arg THEN
-      IF n # 2 THEN S.Mark(E.fewerParams) END
-    ELSE
-      IF n # 1 THEN S.Mark(E.moreParams) END
-    END;
-    IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END;
-    IF func = 31 (*ORD*) THEN
-      IF x.type.form = ST.Char THEN Emitter.Ord(x); x.type := ST.intType
-      ELSIF x.type.form = ST.Bool THEN Emitter.Ord(x); x.type := ST.intType
-      ELSIF x.type.form = ST.Set THEN Emitter.Ord(x); x.type := ST.intType
-      ELSIF x.type.form = ST.LongSet THEN
-        Emitter.Ord(x); x.type := ST.longIntType
-      END
-    ELSIF func = 32 (*CHR*) THEN
-      IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) OR
-         (x.type.form = ST.ShortInt) OR (x.type.form = ST.LongInt) THEN Emitter.Ord(x) END
-    ELSIF func = 33 (*ABS*) THEN
-      IF x.type.form IN {ST.Int, ST.ShortInt, ST.LongInt} THEN Emitter.AbsVal(x) END
-    ELSIF func = 34 (*ODD*) THEN
-      IF x.type.form IN {ST.Int, ST.ShortInt, ST.LongInt, ST.Byte} THEN Emitter.OddVal(x) END
-    ELSIF func = 35 (*ASR*) THEN
-      CheckInt(x); Emitter.AsrVal(x, y)
-    ELSIF func = 36 (*LSL*) THEN
-      CheckInt(x); Emitter.LslVal(x, y)
-    ELSIF func = 37 (*ROR*) THEN
-      CheckInt(x); Emitter.RorVal(x, y)
-    ELSIF func = 38 (*FLOOR*) THEN
-      IF x.type.form = ST.Real THEN Emitter.Floor(x)
-      ELSE S.Mark(E.incompatible)
-      END
-    ELSIF func = 39 (*FLT*) THEN
-      IF x.type.form IN {ST.Int, ST.Byte, ST.ShortInt, ST.LongInt} THEN Emitter.Flt(x)
-      ELSE S.Mark(E.incompatible)
-      END
-    ELSIF func = 40 (*LEN*) THEN
+    IF func = 40 (*LEN*) THEN
+      LenDesignator(x, depth);
+      IF sym = S.comma THEN
+        WHILE sym = S.comma DO
+          S.Get(sym);
+          Expr0(y)
+        END;
+        S.Mark(E.moreParams)
+      END;
+      IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END;
       IF x.type.form = ST.Array THEN
-        Emitter.MakeConstItem(x, ST.intType, x.type.len)
-      ELSE S.Mark(E.notArray)
-      END
-    ELSIF func = 45 (*SHORT*) THEN
-      IF x.type.form = ST.LongInt THEN
-        Emitter.Short(x); x.type := ST.intType
-      ELSIF x.type.form = ST.Int THEN
-        Emitter.Short(x); x.type := ST.shortIntType
-      ELSIF x.type.form = ST.LongSet THEN
-        Emitter.Short(x); x.type := ST.setType
-      ELSE S.Mark(E.incompatible)
-      END
-    ELSIF func = 46 (*LONG*) THEN
-      IF x.type.form = ST.Int THEN
-        Emitter.Long(x); x.type := ST.longIntType
-      ELSIF x.type.form = ST.ShortInt THEN
-        Emitter.Long(x); x.type := ST.intType
-      ELSIF x.type.form = ST.Set THEN
-        Emitter.Long(x); x.type := ST.longSetType
-      ELSE S.Mark(E.incompatible)
-      END
-    ELSE ASSERT(FALSE)
-    END;
-    IF (func # 31) & (func # 45) & (func # 46) THEN x.type := resType END
+        IF (x.mode = ST.VarPar) & (x.type.openRank > 0) THEN
+          lenAddr := M.SHORT(x.a) + (depth + 1) * 8;
+          Emitter.LoadParamLen(x, lenAddr)
+        ELSE
+          Emitter.MakeConstItem(x, ST.intType, x.type.len)
+        END
+      ELSE
+        S.Mark(E.notArray);
+        Emitter.MakeConstItem(x, ST.intType, 0)
+      END;
+      x.type := ST.intType
+    ELSE
+      Expr0(x);
+      n := 1;
+      WHILE sym = S.comma DO
+        S.Get(sym);
+        Expr0(y);
+        INC(n)
+      END;
+      IF is2arg THEN
+        IF n # 2 THEN S.Mark(E.fewerParams) END
+      ELSE
+        IF n # 1 THEN S.Mark(E.moreParams) END
+      END;
+      IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END;
+      IF func = 31 (*ORD*) THEN
+        IF (x.type.form = ST.String) & (x.mode = ST.Const) THEN
+          FoldStringConstToChar(x)
+        END;
+        IF x.type.form = ST.Char THEN Emitter.Ord(x); x.type := ST.intType
+        ELSIF x.type.form = ST.Bool THEN Emitter.Ord(x); x.type := ST.intType
+        ELSIF x.type.form = ST.Set THEN Emitter.Ord(x); x.type := ST.intType
+        ELSIF x.type.form = ST.LongSet THEN
+          Emitter.Ord(x); x.type := ST.longIntType
+        END
+      ELSIF func = 32 (*CHR*) THEN
+        IF (x.type.form = ST.Int) OR (x.type.form = ST.Byte) OR
+           (x.type.form = ST.ShortInt) OR (x.type.form = ST.LongInt) THEN Emitter.Ord(x) END
+      ELSIF func = 33 (*ABS*) THEN
+        IF x.type.form IN {ST.Int, ST.ShortInt, ST.LongInt} THEN Emitter.AbsVal(x) END
+      ELSIF func = 34 (*ODD*) THEN
+        IF x.type.form IN {ST.Int, ST.ShortInt, ST.LongInt, ST.Byte} THEN Emitter.OddVal(x) END
+      ELSIF func = 35 (*ASR*) THEN
+        CheckInt(x); Emitter.AsrVal(x, y)
+      ELSIF func = 36 (*LSL*) THEN
+        CheckInt(x); Emitter.LslVal(x, y)
+      ELSIF func = 37 (*ROR*) THEN
+        CheckInt(x); Emitter.RorVal(x, y)
+      ELSIF func = 38 (*FLOOR*) THEN
+        IF x.type.form = ST.Real THEN Emitter.Floor(x)
+        ELSE S.Mark(E.incompatible)
+        END
+      ELSIF func = 39 (*FLT*) THEN
+        IF x.type.form IN {ST.Int, ST.Byte, ST.ShortInt, ST.LongInt} THEN Emitter.Flt(x)
+        ELSE S.Mark(E.incompatible)
+        END
+      ELSIF func = 45 (*SHORT*) THEN
+        IF x.type.form = ST.LongInt THEN
+          Emitter.Short(x); x.type := ST.intType
+        ELSIF x.type.form = ST.Int THEN
+          Emitter.Short(x); x.type := ST.shortIntType
+        ELSIF x.type.form = ST.LongSet THEN
+          Emitter.Short(x); x.type := ST.setType
+        ELSE S.Mark(E.incompatible)
+        END
+      ELSIF func = 46 (*LONG*) THEN
+        IF x.type.form = ST.Int THEN
+          Emitter.Long(x); x.type := ST.longIntType
+        ELSIF x.type.form = ST.ShortInt THEN
+          Emitter.Long(x); x.type := ST.intType
+        ELSIF x.type.form = ST.Set THEN
+          Emitter.Long(x); x.type := ST.longSetType
+        ELSE S.Mark(E.incompatible)
+        END
+      ELSE ASSERT(FALSE)
+      END;
+      IF (func # 31) & (func # 45) & (func # 46) THEN x.type := resType END
+    END
   ELSE S.Mark(E.expLparen)
   END
 END StandFunc;
@@ -374,18 +747,61 @@ BEGIN
   END
 END StandProc;
 
+(** Emit hidden length params for an open-array actual:
+    forward from caller's frame if it is itself open, else push as constants. *)
+PROCEDURE EmitOpenArrayLengths(parType, actType: ST.Type; actA: INTEGER);
+VAR i: INTEGER;
+  n: Emitter.Item;
+BEGIN
+  i := 0;
+  WHILE i < parType.openRank DO
+    IF (actType # NIL) & (actType.form = ST.Array) & (actType.openRank > 0) THEN
+      Emitter.LoadParamLen(n, actA + (i + 1) * 8);
+      Emitter.ValueParam(n);
+      actType := actType.base
+    ELSIF (actType # NIL) & (actType.form = ST.Array) & (actType.len > 0) THEN
+      Emitter.MakeConstItem(n, ST.intType, actType.len);
+      Emitter.ValueParam(n);
+      actType := actType.base
+    ELSIF (actType # NIL) & (actType.form = ST.String) THEN
+      Emitter.MakeConstItem(n, ST.intType, actType.len);
+      Emitter.ValueParam(n);
+      actType := ST.charType
+    ELSE
+      S.Mark(E.incompatible);
+      Emitter.MakeConstItem(n, ST.intType, 0);
+      Emitter.ValueParam(n);
+      IF (actType # NIL) & (actType.form = ST.Array) THEN actType := actType.base END
+    END;
+    INC(i)
+  END
+END EmitOpenArrayLengths;
+
 (** Param = Expr.
      par can be NIL *)
 PROCEDURE Param(par: ST.Object);
 VAR x: Emitter.Item;
+  actA: INTEGER;
 BEGIN
   Expr0(x);
   IF par # NIL THEN
-    IF ST.TypesCompatible(par.type, x.type) THEN
+    IF (par.type.form = ST.Char) & (x.type.form = ST.String) THEN
+      FoldStringConstToChar(x)
+    END;
+    IF (par.type.openRank > 0) & ST.IsCharArrayType(par.type) & (x.type.form = ST.String) & (x.mode = ST.Const)
+        OR (par.class = ST.Var) & (* value param: widening OK; constant numerics OK; VAR = strict *)
+           ((x.mode = ST.Const) & ST.TypesCompatible(par.type, x.type)
+            OR (x.mode # ST.Const) & ST.TypeAssignable(par.type, x.type))
+        OR (par.class = ST.VarPar) & ST.TypesCompatible(par.type, x.type) THEN
+      actA := M.SHORT(x.a);
       IF par.class = ST.Var THEN
         Emitter.ValueParam(x)
-      ELSE (* par.class = ST.Par *)
+      ELSE
+        IF ~par.readOnly & x.rdo THEN S.Mark(E.readOnly) END;
         Emitter.VarParam(x)
+      END;
+      IF par.type.openRank > 0 THEN
+        EmitOpenArrayLengths(par.type, x.type, actA)
       END
     ELSE S.Mark(E.incompatible)
     END
@@ -420,13 +836,14 @@ END ActualParams;
 PROCEDURE Factor(VAR x: Emitter.Item);
 VAR obj: ST.Object;
   y, z: Emitter.Item;
+  rx: INTEGER;
 BEGIN
   IF sym = S.lparen THEN
     S.Get(sym);
     Expr0(x);
     IF sym = S.rparen THEN S.Get(sym) ELSE S.Mark(E.expRparen) END
   ELSIF sym = S.int THEN
-    Emitter.MakeConstItem(x, ST.intType, S.ival);
+    Emitter.MakeConstItem(x, ST.longIntType, S.ival);
     S.Get(sym)
   ELSIF sym = S.real THEN
     Emitter.MakeConstItem(x, ST.realType, S.ival);
@@ -437,11 +854,21 @@ BEGIN
   ELSIF sym = S.ident THEN
     QualIdent(obj);
     IF obj.class = ST.SFunc THEN StandFunc(x, M.SHORT(obj.address), obj.type)
-    ELSE Emitter.MakeItem(x, obj); Selector(x)
+    ELSE
+      Emitter.MakeItem(x, obj); Selector(x);
+      IF (x.type.form = ST.Proc) & (x.type.base.form # ST.NoTyp)
+          & (sym = S.lparen) THEN
+        Emitter.PrepCall(x, rx);
+        ActualParams(x);
+        Emitter.Call(x, rx, obj);
+        x.type := x.type.base;
+        x.mode := Emitter.Reg;
+        x.r := rx;
+        Emitter.FixRH(rx + 1)
+      END
     END
   ELSIF sym = S.string THEN
-    Emitter.MakeConstItem(x, ST.charType, ORD(S.sval[0]));
-    IF S.len # 1 THEN S.Mark(E.stringTodo) END;
+    Emitter.MakeStringConstItem(x, ST.RegisterString(S.sval, S.len), S.len);
     S.Get(sym)
   ELSIF (sym = S.false) OR (sym = S.true) THEN
     Emitter.MakeConstItem(x, ST.boolType, ORD(sym = S.true));
@@ -566,6 +993,16 @@ BEGIN
   END
 END SimpleExpr;
 
+PROCEDURE IsCharSeq(t: ST.Type): BOOLEAN;
+RETURN (t # NIL) &
+       ((t.form = ST.Char) OR (t.form = ST.String) OR ST.IsCharArrayType(t))
+END IsCharSeq;
+
+PROCEDURE IllegalArrayRelation(t1, t2: ST.Type): BOOLEAN;
+RETURN (t1 # NIL) & (t2 # NIL) & (t1.form = ST.Array) &
+       (t2.form = ST.Array) & ~ST.IsCharArrayType(t1)
+END IllegalArrayRelation;
+
 (* Expr = SimpleExpr [relation SimpleExpr]. *)
 PROCEDURE Expr(VAR x: Emitter.Item);
 VAR op: INTEGER;
@@ -582,7 +1019,20 @@ BEGIN
     op := sym;
     S.Get(sym);
     SimpleExpr(y);
-    IF (x.type.form IN {ST.Char, ST.Int, ST.Set, ST.Byte, ST.ShortInt, ST.LongInt, ST.LongSet}) & ST.TypesCompatible(x.type, y.type) THEN
+    IF (x.type.form = ST.Char) & (y.type.form = ST.String) & (y.mode = ST.Const) THEN
+      FoldStringConstToChar(y)
+    END;
+    IF (y.type.form = ST.Char) & (x.type.form = ST.String) & (x.mode = ST.Const) THEN
+      FoldStringConstToChar(x)
+    END;
+    IF IllegalArrayRelation(x.type, y.type) OR IllegalArrayRelation(y.type, x.type) THEN
+      S.Mark(E.illegalRelation)
+    ELSIF (x.type.form = ST.Char) & (y.type.form = ST.Char) THEN
+      Emitter.IntRel(op, x, y);
+      x.type := ST.boolType
+    ELSIF IsCharSeq(x.type) & IsCharSeq(y.type) THEN
+      Emitter.CmpStrings(op, x, y)
+    ELSIF (x.type.form IN {ST.Char, ST.Int, ST.Set, ST.Byte, ST.ShortInt, ST.LongInt, ST.LongSet}) & ST.TypesCompatible(x.type, y.type) THEN
       Emitter.IntRel(op, x, y);
       x.type := ST.boolType
     ELSIF (x.type.form = ST.Real) & (y.type.form = ST.Real) THEN
@@ -624,12 +1074,12 @@ BEGIN
     IF x.type.form # ST.Proc THEN S.Mark(E.notProcedure)
     ELSE
       IF x.type.base.form # ST.NoTyp THEN S.Mark(E.notUsed) END;
-      Emitter.PrepCall(x, rx); ActualParams(x); Emitter.Call(x, rx)
+      Emitter.PrepCall(x, rx); ActualParams(x); Emitter.Call(x, rx, obj)
     END
   ELSIF x.type.form = ST.Proc THEN (* Procedure with no parameters *)
     IF x.type.nofpars > 0 THEN S.Mark(E.noParams) END;
     IF x.type.base.form # ST.NoTyp THEN S.Mark(E.notUsed)
-    ELSE Emitter.PrepCall(x, rx); Emitter.Call(x, rx)
+    ELSE Emitter.PrepCall(x, rx); Emitter.Call(x, rx, obj)
     END
   ELSE S.Mark(E.expStatement)
   END
@@ -747,7 +1197,8 @@ END RepeatStatement;
 PROCEDURE ForStatement;
 VAR obj: ST.Object;
   x, y, endVal, inc: Emitter.Item;
-  step, L, savedConst, savedReg: INTEGER;
+  step, L, savedReg: INTEGER;
+  savedConst: M.LONGINT;
 BEGIN
   S.Get(sym);
   IF sym = S.ident THEN
@@ -769,7 +1220,7 @@ BEGIN
     S.Get(sym);
     Expr0(y);
     IF y.mode = ST.Const THEN
-      IF y.a # 0 THEN step := y.a
+      IF y.a # 0 THEN step := M.SHORT(y.a)
       ELSE S.Mark(E.badDiv)
       END
     ELSE S.Mark(E.notValue)
@@ -806,24 +1257,28 @@ VAR expr: Emitter.Item;
   VAR x, y: Emitter.Item;
   BEGIN
     Expr0(x);
+    FoldStringConstToChar(x);
     IF x.mode # ST.Const THEN S.Mark(E.notValue); x.mode := ST.Const; x.a := 0 END;
     IF sym = S.upto THEN
       S.Get(sym); Expr0(y);
+      FoldStringConstToChar(y);
       IF y.mode # ST.Const THEN S.Mark(E.notValue); y.mode := ST.Const; y.a := 0 END;
-      Emitter.CaseRangeLabel(expr, x.a, y.a, matchL)
+      Emitter.CaseRangeLabel(expr, M.SHORT(x.a), M.SHORT(y.a), matchL)
     ELSE
-      Emitter.CaseLabel(expr, x.a, matchL)
+      Emitter.CaseLabel(expr, M.SHORT(x.a), matchL)
     END;
     WHILE sym = S.comma DO
       S.Get(sym);
       Expr0(x);
+      FoldStringConstToChar(x);
       IF x.mode # ST.Const THEN S.Mark(E.notValue); x.mode := ST.Const; x.a := 0 END;
       IF sym = S.upto THEN
         S.Get(sym); Expr0(y);
+        FoldStringConstToChar(y);
         IF y.mode # ST.Const THEN S.Mark(E.notValue); y.mode := ST.Const; y.a := 0 END;
-        Emitter.CaseRangeLabel(expr, x.a, y.a, matchL)
+        Emitter.CaseRangeLabel(expr, M.SHORT(x.a), M.SHORT(y.a), matchL)
       ELSE
-        Emitter.CaseLabel(expr, x.a, matchL)
+        Emitter.CaseLabel(expr, M.SHORT(x.a), matchL)
       END
     END
   END CaseLabelList;
@@ -930,6 +1385,7 @@ BEGIN
 
       IF sym = S.import THEN S.Get(sym); ImportList END;
       DeclSeq;
+      Generator.SetEntry(Generator.Here() * 4);
       IF sym = S.begin THEN S.Get(sym); StatSeq END;
 
       IF sym = S.end THEN
@@ -965,5 +1421,8 @@ RETURN ~S.error END Compile;
 BEGIN
   Expr0 := Expr;
   StatSeq0 := StatSeq;
+  Type0 := Type;
+  FormalType0 := FormalType;
+  allowOpenArrayParams := FALSE;
   NEW(dummy); dummy.class := ST.Var; dummy.type := ST.intType
 END Parser.

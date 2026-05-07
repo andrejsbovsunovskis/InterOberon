@@ -52,7 +52,7 @@ VAR
   errPos: INTEGER; (* Position of last error *)
 
   (** Loaded strings **)
-  errors: ARRAY 128, 80 OF CHAR; (** error code < 128, error length < 80 *)
+  errors: ARRAY 134, 80 OF CHAR; (** error codes *)
   compiler: ARRAY 13, 80 OF CHAR; (** 13 compiler messages, length < 80 *)
   kw: ARRAY 32 OF Pair; (** 32 keywords like BEGIN *)
   uni: ARRAY 32 OF Pair; (** universe objects like INTEGER *)

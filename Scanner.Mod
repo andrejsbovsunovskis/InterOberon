@@ -54,16 +54,19 @@ CONST
   else*      = 55;
   elsif*     = 56;
   until*     = 57;
+  procedure* = 58;
+  return*    = 59;
   const*     = 63;
   array*     = 64;
   var*       = 65;
+  type*      = 66;
   begin*     = 67;
   import*    = 68;
   module*    = 69;
   eot        = 70; (** End of text *)
 
   (** - **)
-  maxInt* = 2147483647;
+  maxInt* = 7FFFFFFFH;
   minInt* = -maxInt - 1;
   maxTrans*    = 8;    (** Max translation entries in a comment *)
   maxLangLen*  = 5;    (** Max length of a language code *)
@@ -80,7 +83,7 @@ VAR
 
   id*: ARRAY 64 OF CHAR;    (** When sym = ident *)
   len*: INTEGER;            (** When sym = ident or string *)
-  ival*: INTEGER;           (** When sym = int *)
+  ival*: LONGINT;           (** When sym = int *)
   sval*: ARRAY 256 OF CHAR; (** When sym = string *)
 
   ch: CHAR; (* Used in Get *)
@@ -278,7 +281,8 @@ RETURN result END EncodeReal;
 PROCEDURE Get*(VAR sym: INTEGER);
 VAR quote: CHAR;
   marked: BOOLEAN;
-  n, hval, hdigits: INTEGER;
+  n, hdigits: INTEGER;
+  hval: LONGINT;
   fracNum, fracDen: INTEGER;
   hexOnly, hexOverflow: BOOLEAN;
   kw: ARRAY 32 OF CHAR;
@@ -343,14 +347,15 @@ BEGIN
       REPEAT
         IF ('0' <= ch) & (ch <= '9') THEN
           n := ORD(ch) - ORD('0');
-          IF ival <= (maxInt - n) DIV 10 THEN ival := ival * 10 + n
+          IF ival <= (M.maxLongInt - n) DIV 10 THEN
+            ival := ival * 10 + n
           ELSE Mark(E.intOverflow)
           END
         ELSE (* 'A'..'F' *)
           n := ORD(ch) - ORD('A') + 10;
           hexOnly := TRUE
         END;
-        IF hdigits < 8 THEN
+        IF hdigits < 16 THEN
           hval := hval * 16 + n;
           INC(hdigits)
         ELSE hexOverflow := TRUE
@@ -362,7 +367,11 @@ BEGIN
         ival := hval; sym := int; Read
       ELSIF ch = 'X' THEN
         IF hexOverflow OR (hval > 0FFFFH) THEN Mark(E.intOverflow) END;
-        ival := hval; sym := char; Read
+        len := 1;
+        sval[0] := CHR(M.SHORT(hval));
+        sval[1] := 0X;
+        sym := string;
+        Read
       ELSIF hexOnly THEN
         Mark(E.badHex); ival := hval; sym := int
       ELSIF ch = '.' THEN
@@ -377,7 +386,7 @@ BEGIN
             END;
             Read
           END;
-          ival := EncodeReal(ival, fracNum, fracDen);
+          ival := EncodeReal(M.SHORT(ival), fracNum, fracDen);
           sym := real
         ELSIF ch = '.' THEN
           sym := int;
@@ -427,7 +436,10 @@ BEGIN
       ELSIF kw = 'CASE'   THEN sym := case
       ELSIF kw = 'OF'     THEN sym := of
       ELSIF kw = 'ARRAY'  THEN sym := array
-      ELSIF kw = 'CONST'  THEN sym := const
+      ELSIF kw = 'CONST'  THEN sym := const      
+      ELSIF kw = 'TYPE'   THEN sym := type      
+      ELSIF kw = 'PROCEDURE' THEN sym := procedure
+      ELSIF kw = 'RETURN' THEN sym := return
       ELSE Mark(E.unknownKW)
       END
     ELSE sym := null; Read

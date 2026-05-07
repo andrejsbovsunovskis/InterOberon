@@ -1,0 +1,32 @@
+{
+  "comments": {
+    "blockComment": ["(*", "*)"]
+  },
+  "brackets": [
+    ["(", ")"],
+    ["[", "]"],
+    ["{", "}"]
+  ],
+  "autoClosingPairs": [
+    { "open": "(*", "close": "*)" },
+    { "open": "(",  "close": ")"  },
+    { "open": "[",  "close": "]"  },
+    { "open": "{",  "close": "}"  },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
+    { "open": "'",  "close": "'",  "notIn": ["string", "comment"] }
+  ],
+  "surroundingPairs": [
+    ["(", ")"],
+    ["[", "]"],
+    ["{", "}"],
+    ["\"", "\""],
+    ["'", "'"]
+  ],
+  "folding": {
+    "markers": {
+      "start": "^\\s*(MODULE|PROCEDURE|МОДУЛЬ|ПРОЦЕДУРА|MODULIS|PROCEDŪRA)\\b",
+      "end": "^\\s*END\\b"
+    }
+  },
+  "wordPattern": "[A-Za-z_\\u00C0-\\u024F\\u0370-\\u03FF\\u0400-\\u052F][A-Za-z0-9_\\u00C0-\\u024F\\u0370-\\u03FF\\u0400-\\u052F]*"
+}

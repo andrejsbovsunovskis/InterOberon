@@ -25,6 +25,9 @@ CASE=CASE
 OF=OF
 ARRAY=ARRAY
 CONST=CONST
+TYPE=TYPE
+PROCEDURE=PROCEDURE
+RETURN=RETURN
 
 [universe]
 CHAR=CHAR
@@ -56,6 +59,7 @@ LONG=LONG
 [Out]
 =Out
 Char=Char
+String=String
 Int=Int
 Ln=Ln
 
@@ -63,6 +67,7 @@ Ln=Ln
 =In
 Char=Char
 Int=Int
+Line=Line
 
 [errors]
 1=MODULE expected
@@ -91,6 +96,7 @@ Int=Int
 50=Divisor is not positive
 51=Division by zero
 52=Incorrect var-parameter
+53=Read-only variable
 59=Assignment to a constant
 60=Uncompatible types
 61=Undeclared identifier
@@ -109,10 +115,15 @@ Int=Int
 124=This is not an array
 125=Index out of bounds
 127=Constant expression expected
+128=Too many parameters (max 8)
+129=Procedure name mismatch
+130=Cannot access local variables of enclosing procedure
 112=Register stack overflow
 113=Out of memory
 114=Unknown key word (error in the language file)
-115=String literals not implemented
+131=String too long for this array
+132=Incompatible array types
+133=Relation not defined for these types
 116=Invalid language code in translation comment
 117=Colon expected in translation comment
 118=Comment not closed

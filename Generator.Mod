@@ -1,11 +1,15 @@
 MODULE Generator;
-IMPORT Strings, Files, M := Machine, E := ErrorMsg;
+IMPORT Strings, Files, ST := SymTable, M := Machine, E := ErrorMsg;
 
 CONST
   (** Output RISC machine code marks **)
   version = 1;
   (** Machine code file mark (first 4 bytes of .obj file) *)
   fileMark = ORD('A') + 256 * (ORD('R') + 256 * (ORD('M') + 256 * version));
+
+  objHeaderBytes* = 32;
+  maxStrReloc = 512;
+  maxGdReloc = 1024;
 
   (** Special registers **)
   SP* = 31; (** Stack pointer register, also zero register *)
@@ -19,6 +23,20 @@ VAR
 
   codeFile: Files.File; (** Temporary file (buffer) for machine code output *)
   codeR: Files.Rider; (** ARM64 instructions must land on positions divisible by 4 *)
+
+  entryByteOffset: INTEGER; (** Module entry offset in bytes within code *)
+
+  strRelocN: INTEGER;
+  strRelocAdrp: ARRAY maxStrReloc OF INTEGER;
+  strRelocIdx: ARRAY maxStrReloc OF INTEGER;
+
+  (** Global-data ADRP relocations: byte offsets of ADRP instructions that
+      load the page address of the __DATA segment for global-variable access.
+      The placeholder ADRP is emitted with target page = 0; the linker patches
+      each entry once the final __TEXT size (and thus the __DATA page distance)
+      is known. *)
+  gdRelocN: INTEGER;
+  gdRelocAdrp: ARRAY maxGdReloc OF INTEGER;
 
 (** Outputs 1 byte. *)
 PROCEDURE Byte*(x: BYTE);
@@ -99,7 +117,8 @@ BEGIN
   ASSERT(imm MOD 10000H = imm);
   ASSERT((shift = 0) OR (shift = 16) OR (shift = 32) OR (shift = 48));
 
-  n := (294H * 10000H + (shift DIV 16) * 200000H + imm) * 20H + r;
+  (* 0xD2800000 | (hw<<21) | (imm16<<5) | Rd; pre-subtract 0x80000000 for DWord signed layout *)
+  n := 52800000H + (shift DIV 16) * 200000H + imm * 20H + r;
   n := -7FFFFFFFH - 1 + n;
 
   DWord(n)
@@ -119,24 +138,47 @@ BEGIN
   DWord(n)
 END MovN;
 
-(** MOV w{r}, #{imm}
-     Load arbitrary 32-bit immediate into W register. *)
-PROCEDURE MovImm*(r, imm: INTEGER);
-VAR w0, w1, zc, nc: INTEGER;
+(** Load arbitrary LONGINT immediate into X-register.
+    All paths use X-register (sf=1) encoding for correct 64-bit results.
+    Compact paths (1–2 insns) for values whose upper 32 bits are uniform. *)
+PROCEDURE MovImm*(r: INTEGER; val: LONGINT);
+VAR q: LONGINT;
+  v0, v1, v2, v3, zc, nc: INTEGER;
 BEGIN
-  w0 := imm MOD 10000H;
-  w1 := ASR(imm, 16) MOD 10000H;
+  v0 := M.SHORT(val MOD 10000H);
+  q := val DIV 10000H;
+  v1 := M.SHORT(q MOD 10000H);
+  q := q DIV 10000H;
+  v2 := M.SHORT(q MOD 10000H);
+  q := q DIV 10000H;
+  v3 := M.SHORT(q MOD 10000H);
 
-  zc := 0; nc := 0;
-  IF w0 = 0 THEN INC(zc) ELSIF w0 = 0FFFFH THEN INC(nc) END;
-  IF w1 = 0 THEN INC(zc) ELSIF w1 = 0FFFFH THEN INC(nc) END;
-
-  IF nc > zc THEN (* start from all ones *)
-    MovN(r, 0FFFFH - w0, 0);
-    IF w1 # 0FFFFH THEN MovK(r, w1, 16) END
-  ELSE (* start from all zeros *)
-    MovZ(r, w0, 0);
-    IF w1 # 0 THEN MovK(r, w1, 16) END
+  IF (v2 = 0) & (v3 = 0) THEN
+    (* Upper 32 bits are 0: MOVZ + optional MOVK (1–2 insns) *)
+    MovZ(r, v0, 0);
+    IF v1 # 0 THEN MovK(r, v1, 16) END
+  ELSIF (v2 = 0FFFFH) & (v3 = 0FFFFH) THEN
+    (* Upper 32 bits are all 1s: MOVN + optional MOVK (1–2 insns) *)
+    MovN(r, 0FFFFH - v0, 0);
+    IF v1 # 0FFFFH THEN MovK(r, v1, 16) END
+  ELSE
+    (* General 64-bit: MOVZ/MOVN + up to 3x MOVK (2–4 insns) *)
+    zc := 0; nc := 0;
+    IF v0 = 0 THEN INC(zc) ELSIF v0 = 0FFFFH THEN INC(nc) END;
+    IF v1 = 0 THEN INC(zc) ELSIF v1 = 0FFFFH THEN INC(nc) END;
+    IF v2 = 0 THEN INC(zc) ELSIF v2 = 0FFFFH THEN INC(nc) END;
+    IF v3 = 0 THEN INC(zc) ELSIF v3 = 0FFFFH THEN INC(nc) END;
+    IF nc > zc THEN
+      MovN(r, 0FFFFH - v0, 0);
+      IF v1 # 0FFFFH THEN MovK(r, v1, 16) END;
+      IF v2 # 0FFFFH THEN MovK(r, v2, 32) END;
+      IF v3 # 0FFFFH THEN MovK(r, v3, 48) END
+    ELSE
+      MovZ(r, v0, 0);
+      IF v1 # 0 THEN MovK(r, v1, 16) END;
+      IF v2 # 0 THEN MovK(r, v2, 32) END;
+      IF v3 # 0 THEN MovK(r, v3, 48) END
+    END
   END
 END MovImm;
 
@@ -149,16 +191,32 @@ BEGIN
   DWord(n)
 END MovHImm;
 
-(** ADRP w{r}, #{imm} *)
-PROCEDURE Adrp*(r, imm: INTEGER);
-VAR n, immlo, immhi: INTEGER;
+(** ADRP x{r}, page
+    page is the intended target page offset from the start of the __text
+    section (e.g. 2 to reach __DATA which sits two 4K pages after code).
+    ARM64 ADRP encodes a PC-relative page offset, so we must subtract the
+    page index of the current instruction within __text. Otherwise, as
+    soon as generated code crosses a 4K boundary, all subsequent ADRP's
+    would resolve to the wrong page (one off per crossed boundary). *)
+PROCEDURE Adrp*(r, page: INTEGER);
+VAR n, imm, immlo, immhi: INTEGER;
 BEGIN
+  imm := page - Files.Pos(codeR) DIV 1000H;
   immlo := imm MOD 4;
-  immhi := imm DIV 4;
+  immhi := imm DIV 4 MOD 80000H;
   n := ((immlo * 20H + 10H) * 80000H + immhi) * 20H + r;
   n := -7FFFFFFFH - 1 + n; (* Set highest bit for op=ADRP *)
   DWord(n)
 END Adrp;
+
+(** ADR Xd, offset — PC-relative address. offset is in bytes. *)
+PROCEDURE Adr*(rd, offset: INTEGER);
+VAR immlo, immhi: INTEGER;
+BEGIN
+  immlo := offset MOD 4;
+  immhi := offset DIV 4;
+  DWord(((immlo * 20H + 10H) * 80000H + (immhi MOD 80000H)) * 20H + rd)
+END Adr;
 
 (** ADD x{r1}, x{r2}, #{imm} if imm > 0,
      SUB x{r1}, x{r2}, #{imm} if imm < 0 *)
@@ -388,6 +446,14 @@ BEGIN
   DWord(n)
 END B;
 
+(** Backpatch unconditional B at word position pos to jump to target. *)
+PROCEDURE PatchB*(pos, target: INTEGER);
+VAR imm26: INTEGER;
+BEGIN
+  imm26 := target - pos;
+  WriteWord(pos, 14000000H + (imm26 MOD 4000000H))
+END PatchB;
+
 (** Returns the sign-extended immediate 19-bit value stored
     in B.Cond instruction.
     pos = offset (in words) of the instruction. *)
@@ -409,6 +475,69 @@ BEGIN
   imm19 := target - pos;
   WriteWord(pos, 54000000H + (imm19 MOD 80000H) * 20H + cond)
 END PatchBCond;
+
+(** STP Xt1, Xt2, [Xn, #imm]! — Store Pair, pre-index.
+    imm must be a multiple of 8. *)
+PROCEDURE Stp*(rt1, rt2, rn, imm: INTEGER);
+VAR imm7, n: INTEGER;
+BEGIN
+  imm7 := imm DIV 8;
+  n := 29800000H + (imm7 MOD 80H) * 8000H + rt2 * 400H + rn * 20H + rt1;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Stp;
+
+(** LDP Xt1, Xt2, [Xn], #imm — Load Pair, post-index.
+    imm must be a multiple of 8. *)
+PROCEDURE Ldp*(rt1, rt2, rn, imm: INTEGER);
+VAR imm7, n: INTEGER;
+BEGIN
+  imm7 := imm DIV 8;
+  n := 28C00000H + (imm7 MOD 80H) * 8000H + rt2 * 400H + rn * 20H + rt1;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Ldp;
+
+(** BL offset — Branch with Link. offset is a signed word offset. *)
+PROCEDURE Bl*(offset: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 14000000H + (offset MOD 4000000H);
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Bl;
+
+(** Backpatch BL at word position pos to jump to target. *)
+PROCEDURE PatchBl*(pos, target: INTEGER);
+VAR imm26: INTEGER;
+BEGIN
+  imm26 := target - pos;
+  WriteWord(pos, -7FFFFFFFH - 1 + 14000000H + (imm26 MOD 4000000H))
+END PatchBl;
+
+(** Returns the sign-extended immediate 26-bit value stored in BL
+    instruction at word position pos. Used to walk a fixup chain whose
+    links are encoded in the BL's own imm26 field. *)
+PROCEDURE ImmFromBl*(pos: INTEGER): INTEGER;
+VAR instr, imm26: INTEGER;
+BEGIN
+  instr := ReadWord(pos);
+  imm26 := instr MOD 4000000H;
+  IF imm26 >= 2000000H THEN DEC(imm26, 4000000H) END (* sign-extend 26 bits *)
+RETURN imm26 END ImmFromBl;
+
+(** RET — Return to address in x30 (LR). *)
+PROCEDURE Ret*;
+BEGIN
+  DWord(565F03C0H + (-7FFFFFFFH - 1)) (* 0xD65F03C0 *)
+END Ret;
+
+(** BLR Xn — Branch with Link to Register. *)
+PROCEDURE Blr*(rn: INTEGER);
+BEGIN
+  (* BLR Xn = 0xD63F0000 | (Rn << 5) *)
+  DWord(563F0000H + rn * 20H + (-7FFFFFFFH - 1))
+END Blr;
 
 PROCEDURE Sxth*(rd, rn: INTEGER);
 VAR n: INTEGER;
@@ -668,21 +797,60 @@ END FStrImm;
 PROCEDURE Here*(): INTEGER;
 RETURN Files.Pos(codeR) DIV 4 END Here;
 
+PROCEDURE LoadStringAddr*(reg, strIdx: INTEGER);
+VAR pos: INTEGER;
+BEGIN
+  IF strRelocN < maxStrReloc THEN
+    pos := Files.Pos(codeR);
+    Adrp(reg, 0);
+    AddImm(reg, reg, 0);
+    strRelocAdrp[strRelocN] := pos;
+    strRelocIdx[strRelocN] := strIdx;
+    INC(strRelocN)
+  END
+END LoadStringAddr;
+
+(** Emits an ADRP that will load the page address of the __DATA segment into
+    {reg}. The instruction is emitted with a placeholder page target (0); the
+    offset is recorded so the linker can patch it once the final __TEXT size
+    is chosen. Replaces the old fixed `Adrp(reg, dataPage)` pattern. *)
+PROCEDURE LoadDataPage*(reg: INTEGER);
+VAR pos: INTEGER;
+BEGIN
+  pos := Files.Pos(codeR);
+  Adrp(reg, 0);
+  IF gdRelocN < maxGdReloc THEN
+    gdRelocAdrp[gdRelocN] := pos;
+    INC(gdRelocN)
+  END
+END LoadDataPage;
+
 PROCEDURE Open*(modName: ARRAY OF CHAR);
 VAR s: ARRAY 256 OF CHAR;
 BEGIN
   codeFile := Files.New('');
   Files.Set(codeR, codeFile, 0);
 
+  entryByteOffset := 0;
+  strRelocN := 0;
+  gdRelocN := 0;
+
   Strings.Copy(M.outDir, s);
   Strings.Append(modName, s);Strings.Append('.obj', s);
   outFile := Files.New(s);
   IF outFile # NIL THEN
     Files.Set(outR, outFile, 0);
-    Files.WriteInt(outR, fileMark)
+    Files.WriteInt(outR, fileMark);
+    Files.WriteInt(outR, 0) (* placeholder for entry byte offset *)
   ELSE M.WriteErrorS(E.cantCreateFile, s)
   END
 END Open;
+
+(** Records the module entry offset (in bytes within the code stream).
+    Patched into the .obj header at Close time. *)
+PROCEDURE SetEntry*(offsetInBytes: INTEGER);
+BEGIN entryByteOffset := offsetInBytes
+END SetEntry;
 
 PROCEDURE Init*;
 BEGIN
@@ -691,13 +859,78 @@ END Init;
 PROCEDURE Close*;
 VAR R: Files.Rider;
   x: BYTE;
+  strpF, relsF, gdrelF: Files.File;
+  codeLen, strpLen, relsLen, gdrelLen, i: INTEGER;
 BEGIN
+  (* Patch the entry-offset placeholder written by Open *)
+  Files.Set(outR, outFile, 4);
+  Files.WriteInt(outR, entryByteOffset);
+
+  codeLen := Files.Length(codeFile);
+
+  strpF := Files.New('');
+  Files.Set(R, strpF, 0);
+  ST.WriteStrpSection(R);
+  strpLen := Files.Length(strpF);
+
+  relsF := Files.New('');
+  Files.Set(R, relsF, 0);
+  Files.WriteInt(R, strRelocN);
+  i := 0;
+  WHILE i < strRelocN DO
+    Files.WriteInt(R, strRelocAdrp[i]);
+    Files.WriteInt(R, strRelocIdx[i]);
+    INC(i)
+  END;
+  relsLen := Files.Length(relsF);
+
+  gdrelF := Files.New('');
+  Files.Set(R, gdrelF, 0);
+  Files.WriteInt(R, gdRelocN);
+  i := 0;
+  WHILE i < gdRelocN DO
+    Files.WriteInt(R, gdRelocAdrp[i]);
+    INC(i)
+  END;
+  gdrelLen := Files.Length(gdrelF);
+
+  Files.Set(outR, outFile, 0);
+  Files.WriteInt(outR, fileMark);
+  Files.WriteInt(outR, entryByteOffset);
+  Files.WriteInt(outR, codeLen);
+  Files.WriteInt(outR, strpLen);
+  Files.WriteInt(outR, relsLen);
+  Files.WriteInt(outR, gdrelLen);
+  WHILE Files.Pos(outR) < objHeaderBytes DO Files.Write(outR, 0) END;
+
   Files.Set(R, codeFile, 0);
   Files.Read(R, x);
   WHILE ~R.eof DO
     Files.Write(outR, x);
     Files.Read(R, x)
   END;
+
+  Files.Set(R, strpF, 0);
+  Files.Read(R, x);
+  WHILE ~R.eof DO
+    Files.Write(outR, x);
+    Files.Read(R, x)
+  END;
+
+  Files.Set(R, relsF, 0);
+  Files.Read(R, x);
+  WHILE ~R.eof DO
+    Files.Write(outR, x);
+    Files.Read(R, x)
+  END;
+
+  Files.Set(R, gdrelF, 0);
+  Files.Read(R, x);
+  WHILE ~R.eof DO
+    Files.Write(outR, x);
+    Files.Read(R, x)
+  END;
+
   Files.Register(outFile)
 END Close;
 
