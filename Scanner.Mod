@@ -1,5 +1,5 @@
 MODULE Scanner;
-IMPORT Files, Out, E := ErrorMsg, Lang, M := Machine;
+IMPORT Files, Out, E := ErrorMsg, Lang, M := Machine, Strings;
 
 CONST
   (** Symbols **)
@@ -20,6 +20,7 @@ CONST
   geq*       = 14; (** >= *)
   lbrak*     = 15; (** [  *)
   rbrak*     = 16; (** ]  *)
+  arrow*     = 17; (** ^  *)
   period*    = 18; (** .  *)
   upto*      = 19; (** .. *)
   char*      = 20;
@@ -27,6 +28,7 @@ CONST
   real*      = 22;
   false*     = 23;
   true*      = 24;
+  nil*       = 25;
   string*    = 26;
   not*       = 27; (** ~ *)
   lparen*    = 28; (** ( *)
@@ -56,6 +58,7 @@ CONST
   until*     = 57;
   procedure* = 58;
   return*    = 59;
+  pointer*   = 60;
   const*     = 63;
   array*     = 64;
   var*       = 65;
@@ -63,13 +66,15 @@ CONST
   begin*     = 67;
   import*    = 68;
   module*    = 69;
+  record*    = 71;
+  is*        = 72;
   eot        = 70; (** End of text *)
 
   (** - **)
   maxInt* = 7FFFFFFFH;
   minInt* = -maxInt - 1;
-  maxTrans*    = 8;    (** Max translation entries in a comment *)
-  maxLangLen*  = 5;    (** Max length of a language code *)
+  maxTrans*    = 32;   (** Max translation entries in a comment *)
+  maxLangLen*  = 15;   (** Max length of a language code *)
   maxTransLen* = 2048; (** Max length of a translation string *)
 
 TYPE
@@ -79,6 +84,7 @@ VAR
   moduleFname: ARRAY 128 OF CHAR;
   r: Files.Rider;
   line, col: INTEGER;
+  identLine*, identCol*: INTEGER;
   nextLine: BOOLEAN; (** Used in Read *)
 
   id*: ARRAY 64 OF CHAR;    (** When sym = ident *)
@@ -93,6 +99,7 @@ VAR
   errPos: INTEGER; (* Position of last error *)
 
   transCount*: INTEGER;
+  transSeqInGap*: INTEGER; (** Translation comments in current Get without a token between *)
   transLang*: ARRAY maxTrans, maxLangLen + 1 OF CHAR;
   transNames*: ARRAY maxTrans, maxTransLen + 1 OF CHAR;
 
@@ -130,6 +137,13 @@ BEGIN
   IF F # NIL THEN Files.Set(r, F, 0); Rewind END
 RETURN F # NIL END Load;
 
+PROCEDURE GetPos*(VAR fname: ARRAY OF CHAR; VAR ln, cl: INTEGER);
+BEGIN
+  Strings.Copy(moduleFname, fname);
+  ln := line;
+  cl := col
+END GetPos;
+
 PROCEDURE Mark*(errCode: INTEGER);
 VAR pos: INTEGER;
 BEGIN
@@ -147,24 +161,21 @@ BEGIN
   END
 RETURN ch END LatinToLower;
 
-PROCEDURE IsLatin(c: CHAR): BOOLEAN;
-RETURN ( 'a' <= c) & (c <=  'z') OR
-       ( 'A' <= c) & (c <=  'Z')
-END IsLatin;
+PROCEDURE IsLangCode(c: CHAR): BOOLEAN;
+RETURN ('a' <= c) & (c <= 'z') OR ('A' <= c) & (c <= 'Z') OR (c = '_')
+END IsLangCode;
 
 PROCEDURE IsLetter(c: CHAR): BOOLEAN;
-RETURN ( 'a' <= c) & (c <=  'z') OR
-       ( 'A' <= c) & (c <=  'Z') OR
-       (0C0X <= c) & (c <= 2AFX) & ~((1C0X <= c) & (c <= 1C3X)) &
-         (c # 0D7X) & (c # 0F7X) OR (* Latin *)
-       ( 388X <= c) & (c <=  3FFX) OR (* Greek *)
-       ( 400X <= c) & (c <=  481X) OR (* Cyrillic *)
-       ( 48AX <= c) & (c <=  52FX) OR (* Cyrillic Extended *)
-       ( 531X <= c) & (c <=  556X) OR (* Armenian *)
-       ( 560X <= c) & (c <=  588X) OR (* Armenian *)
-       ( 5D0X <= c) & (c <=  5EAX) OR (* Hebrew *)
-       ( 710X <= c) & (c <=  74FX) OR (* Sirian *)
-       (10A0X <= c) & (c <= 10FFX)    (* Georgian *)
+RETURN ('a' <= c) & (c <= 'z') OR ('A' <= c) & (c <= 'Z') OR
+       (* Accented characters, but excludes × ÷ *)
+       (0C0X <= c) & (c <= 2AFX) & (c # 0D7X) & (c # 0F7X) &
+         ~((1C0X <= c) & (c <= 1C3X)) OR
+       (370X <= c) & (c <= 3FFX) OR (* Greek *)
+       (400X <= c) & (c <= 52FX) OR (* Cyrillic + Cyrillic Supplement *)
+       (530X <= c) & (c <= 58FX) OR (* Armenian *)
+       (5D0X <= c) & (c <= 5EAX) OR (* Hebrew letters *)
+       (710X <= c) & (c <= 74FX) OR (* Syriac *)
+       (10A0X <= c) & (c <= 10FFX)  (* Georgian *)
 END IsLetter;
 
 (** Skips a possibly nested comment. Begins on ch = '*' after '(',
@@ -189,7 +200,7 @@ BEGIN
         Read; (* skip % *)
         i := 0;
         WHILE (ch # ':') & (ch # 0X) & (ch # '*') DO
-          IF ~IsLatin(ch) OR (i = maxLangLen) THEN
+          IF ~IsLangCode(ch) OR (i = maxLangLen) THEN
             Mark(E.badTransLang)
           ELSE
             transLang[transCount, i] := LatinToLower(ch);
@@ -201,7 +212,8 @@ BEGIN
         IF ch = ':' THEN Read ELSE Mark(E.expColonTrans) END;
         i := 0;
         WHILE (ch # '%') & (ch # '*') & (ch # 0X) DO
-          IF IsLetter(ch) OR (ch = ',') THEN
+          IF ch <= ' ' THEN (* skip spaces in name list *)
+          ELSIF IsLetter(ch) OR (ch = ',') THEN
             IF i # maxTransLen THEN transNames[transCount, i] := ch; INC(i)
             ELSE Mark(E.longTransName)
             END
@@ -292,6 +304,7 @@ BEGIN
     pendingSym := 0
   ELSE
   transCount := 0;
+  transSeqInGap := 0;
   REPEAT
     (* Skip whitespaces *)
     WHILE (ch # 0X) & (ch <= ' ') DO Read END;
@@ -315,10 +328,16 @@ BEGIN
     ELSIF ch = '+' THEN sym := plus; Read
     ELSIF ch = '-' THEN sym := minus; Read
     ELSIF ch = '(' THEN Read;
-      IF ch = '*' THEN Comment; sym := null ELSE sym := lparen END
+      IF ch = '*' THEN
+        Comment;
+        IF transCount > 0 THEN INC(transSeqInGap) END;
+        sym := null
+      ELSE sym := lparen
+      END
     ELSIF ch = ')' THEN sym := rparen; Read
     ELSIF ch = '&' THEN sym := and; Read
     ELSIF ch = '~' THEN sym := not; Read
+    ELSIF ch = '^' THEN sym := arrow; Read
     ELSIF ch = '[' THEN sym := lbrak; Read
     ELSIF ch = ']' THEN sym := rbrak; Read
     ELSIF ch = '{' THEN sym := lbrace; Read
@@ -400,6 +419,8 @@ BEGIN
         sym := int
       END
     ELSIF IsLetter(ch) THEN
+      identLine := line;
+      identCol := col;
       len := 0;
       REPEAT
         IF len < LEN(id) - 1 THEN
@@ -410,36 +431,40 @@ BEGIN
       UNTIL ~(IsLetter(ch) OR ('0' <= ch) & (ch <= '9'));
       id[len] := 0X;
       Lang.FindKeyword(id, kw);
-      IF    kw = ''       THEN sym := ident
-      ELSIF kw = 'MODULE' THEN sym := module
-      ELSIF kw = 'END'    THEN sym := end
-      ELSIF kw = 'BEGIN'  THEN sym := begin
-      ELSIF kw = 'VAR'    THEN sym := var
-      ELSIF kw = 'IMPORT' THEN sym := import
-      ELSIF kw = 'DIV'    THEN sym := div
-      ELSIF kw = 'MOD'    THEN sym := mod
-      ELSIF kw = 'OR'     THEN sym := or
-      ELSIF kw = 'FALSE'  THEN sym := false
-      ELSIF kw = 'TRUE'   THEN sym := true
-      ELSIF kw = 'IF'     THEN sym := if
-      ELSIF kw = 'THEN'   THEN sym := then
-      ELSIF kw = 'ELSIF'  THEN sym := elsif
-      ELSIF kw = 'ELSE'   THEN sym := else
-      ELSIF kw = 'WHILE'  THEN sym := while
-      ELSIF kw = 'DO'     THEN sym := do
-      ELSIF kw = 'REPEAT' THEN sym := repeat
-      ELSIF kw = 'UNTIL'  THEN sym := until
-      ELSIF kw = 'IN'     THEN sym := in
-      ELSIF kw = 'FOR'    THEN sym := for
-      ELSIF kw = 'TO'     THEN sym := to
-      ELSIF kw = 'BY'     THEN sym := by
-      ELSIF kw = 'CASE'   THEN sym := case
-      ELSIF kw = 'OF'     THEN sym := of
-      ELSIF kw = 'ARRAY'  THEN sym := array
-      ELSIF kw = 'CONST'  THEN sym := const      
-      ELSIF kw = 'TYPE'   THEN sym := type      
+      IF    kw = ''          THEN sym := ident
+      ELSIF kw = 'MODULE'    THEN sym := module
+      ELSIF kw = 'END'       THEN sym := end
+      ELSIF kw = 'BEGIN'     THEN sym := begin
+      ELSIF kw = 'VAR'       THEN sym := var
+      ELSIF kw = 'IMPORT'    THEN sym := import
+      ELSIF kw = 'DIV'       THEN sym := div
+      ELSIF kw = 'MOD'       THEN sym := mod
+      ELSIF kw = 'OR'        THEN sym := or
+      ELSIF kw = 'FALSE'     THEN sym := false
+      ELSIF kw = 'TRUE'      THEN sym := true
+      ELSIF kw = 'IF'        THEN sym := if
+      ELSIF kw = 'THEN'      THEN sym := then
+      ELSIF kw = 'ELSIF'     THEN sym := elsif
+      ELSIF kw = 'ELSE'      THEN sym := else
+      ELSIF kw = 'WHILE'     THEN sym := while
+      ELSIF kw = 'DO'        THEN sym := do
+      ELSIF kw = 'REPEAT'    THEN sym := repeat
+      ELSIF kw = 'UNTIL'     THEN sym := until
+      ELSIF kw = 'IN'        THEN sym := in
+      ELSIF kw = 'FOR'       THEN sym := for
+      ELSIF kw = 'TO'        THEN sym := to
+      ELSIF kw = 'BY'        THEN sym := by
+      ELSIF kw = 'CASE'      THEN sym := case
+      ELSIF kw = 'OF'        THEN sym := of
+      ELSIF kw = 'ARRAY'     THEN sym := array
+      ELSIF kw = 'RECORD'    THEN sym := record
+      ELSIF kw = 'POINTER'   THEN sym := pointer
+      ELSIF kw = 'NIL'       THEN sym := nil
+      ELSIF kw = 'IS'        THEN sym := is
+      ELSIF kw = 'CONST'     THEN sym := const      
+      ELSIF kw = 'TYPE'      THEN sym := type      
       ELSIF kw = 'PROCEDURE' THEN sym := procedure
-      ELSIF kw = 'RETURN' THEN sym := return
+      ELSIF kw = 'RETURN'    THEN sym := return
       ELSE Mark(E.unknownKW)
       END
     ELSE sym := null; Read

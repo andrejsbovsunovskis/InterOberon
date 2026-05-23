@@ -23,20 +23,24 @@ CONST
 
   (** - **)
   maxInt = 2147483647;
+  (** Compiler message codes in ErrorMsg must stay below this. *)
+  maxCompilerMsg* = 32;
+
+  maxSearchRoots = 8;
 
 TYPE
   Pair = RECORD
-    key: ARRAY 10 OF CHAR;
-    value: ARRAY 32 OF CHAR
+    key: ARRAY 16 OF CHAR;
+    value: ARRAY 46 OF CHAR
   END;
 
   Module = RECORD
     name: Pair;
-    objs: ARRAY 5 OF Pair
+    objs: ARRAY 16 OF Pair
   END;
 
 VAR
-  curLang*: ARRAY 6 OF CHAR;
+  curLang*: ARRAY 16 OF CHAR;
   r: Files.Rider;
   line, col: INTEGER;
   nextLine: BOOLEAN; (** Used in Read *)
@@ -52,12 +56,16 @@ VAR
   errPos: INTEGER; (* Position of last error *)
 
   (** Loaded strings **)
-  errors: ARRAY 134, 80 OF CHAR; (** error codes *)
-  compiler: ARRAY 13, 80 OF CHAR; (** 13 compiler messages, length < 80 *)
-  kw: ARRAY 32 OF Pair; (** 32 keywords like BEGIN *)
-  uni: ARRAY 32 OF Pair; (** universe objects like INTEGER *)
-  mods: ARRAY 2 OF Module; (** 2 modules like Out *)
+  errors: ARRAY 160, 80 OF CHAR; (** error message texts *)
+  compiler: ARRAY maxCompilerMsg, 80 OF CHAR; (** compiler messages, length < 80 *)
+  kw: ARRAY 48 OF Pair; (** keywords like BEGIN, RECORD, POINTER, IS *)
+  uni: ARRAY 48 OF Pair; (** universe objects like INTEGER, NEW *)
+  mods: ARRAY 3 OF Module; (** built-in modules: In, Out, SYSTEM *)
   modCount: INTEGER; (** Actual length of mods *)
+
+  (** Roots searched for '<lang>.txt'. *)
+  searchRoots: ARRAY maxSearchRoots, 256 OF CHAR;
+  nSearchRoots: INTEGER;
 
 PROCEDURE GetError(code: INTEGER; VAR s: ARRAY OF CHAR);
 BEGIN
@@ -157,15 +165,19 @@ BEGIN
 END ClearPairs;
 
 PROCEDURE ReadIntSection(VAR m: ARRAY OF ARRAY OF CHAR);
-VAR n: INTEGER;
+VAR n, last: INTEGER;
 BEGIN
+  last := LEN(m[0]) - 1;
   FOR n := 0 TO LEN(m) - 1 DO m[n, 0] := 0X END;
   WHILE sym = int DO
     n := ival;
     IF (0 <= n) & (n < LEN(m)) THEN
       GetSym;
       IF sym = eql THEN GetSymLn ELSE Mark(expEql) END;
-      IF sym = string THEN Strings.Copy(sval, m[n]); GetSym
+      IF sym = string THEN
+        Strings.Copy(sval, m[n]);
+        m[n, last] := 0X;
+        GetSym
       ELSE Mark(expString)
       END
     ELSE Mark(rangeError)
@@ -179,7 +191,6 @@ BEGIN
   ClearPairs(m);
   i := 0;
   WHILE sym = string DO
-    (*TODO добавить проверку на вылет за рамки массива и выводить ошибку*)
     Strings.Copy(sval, m[i].key);
     GetSym;
     IF sym = eql THEN GetSymLn ELSE Mark(expEql) END;
@@ -237,14 +248,42 @@ BEGIN
   IF sym # eot THEN Mark(expLbrak) END
 END ReadFile;
 
+(** Clear language-file search roots. *)
+PROCEDURE ResetSearchRoots*;
+BEGIN nSearchRoots := 0
+END ResetSearchRoots;
+
+(** Append one language-file search root. *)
+PROCEDURE AddSearchRoot*(root: ARRAY OF CHAR);
+VAR i: INTEGER;
+BEGIN
+  IF nSearchRoots < maxSearchRoots THEN
+    Strings.Copy(root, searchRoots[nSearchRoots]);
+    i := 0;
+    WHILE searchRoots[nSearchRoots, i] # 0X DO INC(i) END;
+    IF (i > 0) & (i < LEN(searchRoots[0]) - 1) &
+       (searchRoots[nSearchRoots, i - 1] # '/') THEN
+      searchRoots[nSearchRoots, i] := '/';
+      searchRoots[nSearchRoots, i + 1] := 0X
+    END;
+    INC(nSearchRoots)
+  END
+END AddSearchRoot;
+
 PROCEDURE Load*(lang: ARRAY OF CHAR): BOOLEAN;
 VAR F: Files.File;
   fname: ARRAY 256 OF CHAR;
+  i: INTEGER;
 BEGIN
   Strings.Copy(lang, curLang);
-  fname := 'Langs/'; Strings.Append(curLang, fname);
-  Strings.Append('.txt', fname);
-  F := Files.Old(fname);
+  F := NIL; i := 0;
+  WHILE (F = NIL) & (i < nSearchRoots) DO
+    Strings.Copy(searchRoots[i], fname);
+    Strings.Append(curLang, fname);
+    Strings.Append('.txt', fname);
+    F := Files.Old(fname);
+    INC(i)
+  END;
   IF F # NIL THEN
     Files.Set(r, F, 0);
     line := 1;
@@ -290,6 +329,10 @@ BEGIN
   END
 END FindByKey;
 
+PROCEDURE FindKeywordKey*(key: ARRAY OF CHAR; VAR res: ARRAY OF CHAR);
+BEGIN FindByKey(kw, key, res)
+END FindKeywordKey;
+
 PROCEDURE FindKeyword*(s: ARRAY OF CHAR; VAR res: ARRAY OF CHAR);
 BEGIN FindByValue(kw, s, res)
 END FindKeyword;
@@ -325,9 +368,21 @@ BEGIN Strings.Copy(errors[n], s)
 END GetErrorText;
 
 PROCEDURE GetCompilerText*(n: INTEGER; VAR s: ARRAY OF CHAR);
-BEGIN Strings.Copy(compiler[n], s)
+BEGIN
+  IF (n >= 0) & (n < LEN(compiler)) THEN Strings.Copy(compiler[n], s)
+  ELSE s[0] := 0X
+  END
 END GetCompilerText;
 
+PROCEDURE InitCompilerTable;
+VAR i: INTEGER;
 BEGIN
-  error := TRUE
+  FOR i := 0 TO LEN(compiler) - 1 DO compiler[i, 0] := 0X END
+END InitCompilerTable;
+
+BEGIN
+  error := TRUE;
+  nSearchRoots := 0;
+  AddSearchRoot('Langs/');
+  InitCompilerTable
 END Lang.

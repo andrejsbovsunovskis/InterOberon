@@ -1,0 +1,9 @@
+Cap: HELLO
+Append: World!
+Insert: abXYcdef
+Delete: abdef
+Replace: aZZef
+Extract: ZZ
+Pos bc=2
+Pos z=-1
+Len empty=0

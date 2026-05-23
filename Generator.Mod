@@ -7,9 +7,13 @@ CONST
   (** Machine code file mark (first 4 bytes of .obj file) *)
   fileMark = ORD('A') + 256 * (ORD('R') + 256 * (ORD('M') + 256 * version));
 
-  objHeaderBytes* = 32;
+  objHeaderBytes* = 40;
   maxStrReloc = 512;
-  maxGdReloc = 1024;
+  maxDataPageReloc = 1024;
+  maxImports* = 32;
+  maxExports* = 256;
+  maxExtCallReloc = 1024;
+  maxName* = 64;
 
   (** Special registers **)
   SP* = 31; (** Stack pointer register, also zero register *)
@@ -24,19 +28,49 @@ VAR
   codeFile: Files.File; (** Temporary file (buffer) for machine code output *)
   codeR: Files.Rider; (** ARM64 instructions must land on positions divisible by 4 *)
 
-  entryByteOffset: INTEGER; (** Module entry offset in bytes within code *)
+  entryWordOffset: INTEGER; (** Module init proc offset in 32-bit words within code *)
+  varSize*: INTEGER; (** Total bytes of module-level variables in __DATA *)
+  modName: ARRAY maxName OF CHAR;
 
+  (** String-pool ADRP+ADD: code offset in words, strPool index (LoadStringAddr). *)
   strRelocN: INTEGER;
-  strRelocAdrp: ARRAY maxStrReloc OF INTEGER;
+  strRelocOff: ARRAY maxStrReloc OF INTEGER;
   strRelocIdx: ARRAY maxStrReloc OF INTEGER;
 
-  (** Global-data ADRP relocations: byte offsets of ADRP instructions that
-      load the page address of the __DATA segment for global-variable access.
-      The placeholder ADRP is emitted with target page = 0; the linker patches
-      each entry once the final __TEXT size (and thus the __DATA page distance)
-      is known. *)
-  gdRelocN: INTEGER;
-  gdRelocAdrp: ARRAY maxGdReloc OF INTEGER;
+  (** Own __DATA page ADRP relocations: code offset in words (LoadDataPage). *)
+  dataPageRelocN: INTEGER;
+  dataPageRelocOff: ARRAY maxDataPageReloc OF INTEGER;
+
+  (** Imported __DATA page ADRP: code offset in words, import index. *)
+  impDataPageRelocN: INTEGER;
+  impDataPageRelocOff: ARRAY maxDataPageReloc OF INTEGER;
+  impDataPageRelocImp: ARRAY maxDataPageReloc OF INTEGER;
+
+  (** Imported user modules in declaration order. *)
+  importN*: INTEGER;
+  importNames: ARRAY maxImports, maxName OF CHAR;
+
+  (** Exported procedures: name, code offset in words, isCmd (0 = proc, 1 = command). *)
+  exportN*: INTEGER;
+  exportNames: ARRAY maxExports, maxName OF CHAR;
+  exportOff: ARRAY maxExports OF INTEGER;
+  exportIsCmd: ARRAY maxExports OF BOOLEAN;
+
+  (** Cross-module BL (CallExt): code offset in words, import index, proc name. *)
+  extCallRelocN: INTEGER;
+  extCallRelocOff: ARRAY maxExtCallReloc OF INTEGER;
+  extCallRelocImp: ARRAY maxExtCallReloc OF INTEGER;
+  extCallRelocName: ARRAY maxExtCallReloc, maxName OF CHAR;
+
+  compileFlags: INTEGER;
+
+(** Current code position, in words from the start of code segment. *)
+PROCEDURE Here*(): INTEGER;
+RETURN Files.Pos(codeR) DIV 4 END Here;
+
+(** Current code position, in bytes from the start of code segment. *)
+PROCEDURE HereBytes*(): INTEGER;
+RETURN Files.Pos(codeR) END HereBytes;
 
 (** Outputs 1 byte. *)
 PROCEDURE Byte*(x: BYTE);
@@ -201,7 +235,7 @@ END MovHImm;
 PROCEDURE Adrp*(r, page: INTEGER);
 VAR n, imm, immlo, immhi: INTEGER;
 BEGIN
-  imm := page - Files.Pos(codeR) DIV 1000H;
+  imm := page - HereBytes() DIV 1000H;
   immlo := imm MOD 4;
   immhi := imm DIV 4 MOD 80000H;
   n := ((immlo * 20H + 10H) * 80000H + immhi) * 20H + r;
@@ -218,18 +252,18 @@ BEGIN
   DWord(((immlo * 20H + 10H) * 80000H + (immhi MOD 80000H)) * 20H + rd)
 END Adr;
 
-(** ADD x{r1}, x{r2}, #{imm} if imm > 0,
-     SUB x{r1}, x{r2}, #{imm} if imm < 0 *)
+(** ADD/SUB immediate. *)
 PROCEDURE AddImm*(r1, r2, imm: INTEGER);
-VAR n: INTEGER;
+VAR n, a, sh, neg: INTEGER;
 BEGIN
-  IF imm < 0 THEN
-    (* ADD x, x, #-n  ==  SUB x, x, #n *)
-    ASSERT((-imm) MOD 1000H = (-imm));
-    n := ((0A2H * 2000H + (-imm)) * 20H + r2) * 20H + r1
+  sh := 0;
+  IF imm < 0 THEN neg := 1; a := -imm ELSE neg := 0; a := imm END;
+  IF (a # 0) & (a MOD 1000H = 0) THEN a := a DIV 1000H; sh := 1000H END;
+  ASSERT(a MOD 1000H = a);
+  IF neg = 1 THEN
+    n := ((0A2H * 2000H + sh + a) * 20H + r2) * 20H + r1
   ELSE
-    ASSERT(imm MOD 1000H = imm);
-    n := ((22H * 2000H + imm) * 20H + r2) * 20H + r1
+    n := ((22H * 2000H + sh + a) * 20H + r2) * 20H + r1
   END;
   n := -7FFFFFFFH - 1 + n; (* Set highest bit for sf=64bit *)
   DWord(n)
@@ -249,12 +283,19 @@ END StrH;
 
 (** SVC {a}, a is ignored for now. *)
 PROCEDURE Svc*(a: INTEGER);
-VAR n: INTEGER;
+VAR w: INTEGER;
 BEGIN
-  n := 54000001H;
-  n := -7FFFFFFFH - 1 + n; (* Set highest bit *)
-  DWord(n)
+  w := -738197503; (* 0xD4000001 — do not fold via 54000001H under fob *)
+  Files.WriteInt(codeR, w)
 END Svc;
+
+(** Generates code that terminates the program with exit code `code`. *)
+PROCEDURE ExitCode*(code: INTEGER);
+BEGIN
+  MovImm(0, code);
+  MovImm(16, 1);
+  Svc(0)
+END ExitCode;
 
 (** STR* {rt}, [x{rn}, #{imm}]
      size must be 0..3 (1, 2, 4 or 8 bytes). *)
@@ -376,7 +417,7 @@ BEGIN
   DWord(n)
 END Msub;
 
-(** CMP x{rn}, #{imm} - encoded as SUBS xzr, x{rn}, #{imm} *)
+(** CMP x{rn}, #{imm}. *)
 PROCEDURE CmpImm*(rn, imm: INTEGER);
 VAR n: INTEGER;
 BEGIN
@@ -498,6 +539,7 @@ BEGIN
   DWord(n)
 END Ldp;
 
+(** LDP Xt1, Xt2, [Xn, #{imm}] — offset, base unchanged. imm is a multiple of 8. *)
 (** BL offset — Branch with Link. offset is a signed word offset. *)
 PROCEDURE Bl*(offset: INTEGER);
 VAR n: INTEGER;
@@ -538,6 +580,15 @@ BEGIN
   (* BLR Xn = 0xD63F0000 | (Rn << 5) *)
   DWord(563F0000H + rn * 20H + (-7FFFFFFFH - 1))
 END Blr;
+
+PROCEDURE Sxtb*(rd, rn: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  (* SXTB Xd, Wn = SBFM Xd, Xn, #0, #7 *)
+  n := 13401C00H + rn * 20H + rd;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END Sxtb;
 
 PROCEDURE Sxth*(rd, rn: INTEGER);
 VAR n: INTEGER;
@@ -721,6 +772,11 @@ PROCEDURE Fcvtms*(rd, fn: INTEGER);
 BEGIN DWord(1E300000H + fn * 20H + rd)
 END Fcvtms;
 
+(** FCVTMS Wd, Dn — double to signed 32-bit integer, round toward -inf *)
+PROCEDURE FcvtmsWfromD*(rd, fn: INTEGER);
+BEGIN DWord(1E700000H + fn * 20H + rd)
+END FcvtmsWfromD;
+
 (** CSINC Xd, Xn, Xm, cond — Rd = (cond) ? Rn : Rm+1
     Used as CSET Xd, cond via CSINC Xd, xzr, xzr, Negated(cond) *)
 PROCEDURE CSInc*(rd, rn, rm, cond: INTEGER);
@@ -733,6 +789,30 @@ BEGIN
   n := -7FFFFFFFH - 1 + n;
   DWord(n)
 END CSInc;
+
+(** ADCS Wd, Wn, Wm — add with carry, sets flags *)
+PROCEDURE Adcs*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 3AH * 1000000H + rm * 10000H + rn * 20H + rd;
+  DWord(n)
+END Adcs;
+
+(** SBCS Wd, Wn, Wm — subtract with borrow, sets flags *)
+PROCEDURE Sbcs*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 7AH * 1000000H + rm * 10000H + rn * 20H + rd;
+  DWord(n)
+END Sbcs;
+
+(** UMULL Xd, Wn, Wm — unsigned multiply, low 32 bits in Wd *)
+PROCEDURE Umull*(rd, rn, rm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  n := 9BA08000H + rm * 10000H + SP * 400H + rn * 20H + rd;
+  DWord(n)
+END Umull;
 
 (** BRK #imm16 — breakpoint trap *)
 PROCEDURE Brk*(imm: INTEGER);
@@ -772,6 +852,11 @@ PROCEDURE FMovStoW*(rd, fn: INTEGER);
 BEGIN DWord(1E260000H + fn * 20H + rd)
 END FMovStoW;
 
+(** FMOV Sd, Sn — move single-precision float between FPRs *)
+PROCEDURE FMovS*(fd, fn: INTEGER);
+BEGIN DWord(1E204000H + fn * 20H + fd)
+END FMovS;
+
 (** LDR St, [Xn, #imm] — load single-precision float from memory *)
 PROCEDURE FLdrImm*(ft, rn, imm: INTEGER);
 VAR n: INTEGER;
@@ -794,49 +879,151 @@ BEGIN
   DWord(n)
 END FStrImm;
 
-PROCEDURE Here*(): INTEGER;
-RETURN Files.Pos(codeR) DIV 4 END Here;
+PROCEDURE DAdd*(fd, fn, fm: INTEGER);
+BEGIN DWord(1E602800H + fm * 10000H + fn * 20H + fd)
+END DAdd;
+
+PROCEDURE DSub*(fd, fn, fm: INTEGER);
+BEGIN DWord(1E603800H + fm * 10000H + fn * 20H + fd)
+END DSub;
+
+PROCEDURE DMul*(fd, fn, fm: INTEGER);
+BEGIN DWord(1E600800H + fm * 10000H + fn * 20H + fd)
+END DMul;
+
+PROCEDURE DDiv*(fd, fn, fm: INTEGER);
+BEGIN DWord(1E601800H + fm * 10000H + fn * 20H + fd)
+END DDiv;
+
+PROCEDURE DCmp*(fn, fm: INTEGER);
+BEGIN DWord(1E602000H + fm * 10000H + fn * 20H)
+END DCmp;
+
+PROCEDURE DNeg*(fd, fn: INTEGER);
+BEGIN DWord(1E614000H + fn * 20H + fd)
+END DNeg;
+
+PROCEDURE ScvtfD*(fd, rn: INTEGER);
+BEGIN DWord(9E620000H + rn * 20H + fd)
+END ScvtfD;
+
+PROCEDURE FcvtmsD*(rd, fn: INTEGER);
+BEGIN DWord(9E700000H + fn * 20H + rd)
+END FcvtmsD;
+
+PROCEDURE FcvtSD*(fd, fn: INTEGER);
+BEGIN DWord(1E22C000H + fn * 20H + fd)
+END FcvtSD;
+
+PROCEDURE FcvtDS*(fd, fn: INTEGER);
+BEGIN DWord(1E624000H + fn * 20H + fd)
+END FcvtDS;
+
+PROCEDURE FMovXtoD*(fd, rn: INTEGER);
+BEGIN DWord(9E670000H + rn * 20H + fd)
+END FMovXtoD;
+
+PROCEDURE FMovDtoX*(rd, fn: INTEGER);
+BEGIN DWord(9E660000H + fn * 20H + rd)
+END FMovDtoX;
+
+PROCEDURE FMovD*(fd, fn: INTEGER);
+BEGIN DWord(1E604000H + fn * 20H + fd)
+END FMovD;
+
+PROCEDURE DLdrImm*(ft, rn, imm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  imm := imm DIV 8;
+  ASSERT(imm MOD 1000H = imm);
+  n := 7D400000H + imm * 400H + rn * 20H + ft;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END DLdrImm;
+
+PROCEDURE DStrImm*(ft, rn, imm: INTEGER);
+VAR n: INTEGER;
+BEGIN
+  imm := imm DIV 8;
+  ASSERT(imm MOD 1000H = imm);
+  n := 7C000000H + imm * 400H + rn * 20H + ft;
+  n := -7FFFFFFFH - 1 + n;
+  DWord(n)
+END DStrImm;
+
+(** Emit placeholder BL; importIdx indexes importNames, procName for linker. *)
+PROCEDURE CallExt*(importIdx: INTEGER; procName: ARRAY OF CHAR);
+BEGIN
+  IF extCallRelocN < maxExtCallReloc THEN
+    extCallRelocOff[extCallRelocN] := Here();
+    extCallRelocImp[extCallRelocN] := importIdx;
+    Strings.Copy(procName, extCallRelocName[extCallRelocN]);
+    INC(extCallRelocN)
+  END;
+  DWord(14000000H + (-7FFFFFFFH - 1)) (* BL with imm26 = 0; linker patches *)
+END CallExt;
 
 PROCEDURE LoadStringAddr*(reg, strIdx: INTEGER);
 VAR pos: INTEGER;
 BEGIN
   IF strRelocN < maxStrReloc THEN
-    pos := Files.Pos(codeR);
+    pos := Here();
     Adrp(reg, 0);
     AddImm(reg, reg, 0);
-    strRelocAdrp[strRelocN] := pos;
+    strRelocOff[strRelocN] := pos;
     strRelocIdx[strRelocN] := strIdx;
     INC(strRelocN)
   END
 END LoadStringAddr;
 
-(** Emits an ADRP that will load the page address of the __DATA segment into
-    {reg}. The instruction is emitted with a placeholder page target (0); the
-    offset is recorded so the linker can patch it once the final __TEXT size
-    is chosen. Replaces the old fixed `Adrp(reg, dataPage)` pattern. *)
+(** Emit ADRP+ADD placeholders for own __DATA page (linker patches both). *)
 PROCEDURE LoadDataPage*(reg: INTEGER);
 VAR pos: INTEGER;
 BEGIN
-  pos := Files.Pos(codeR);
+  pos := Here();
   Adrp(reg, 0);
-  IF gdRelocN < maxGdReloc THEN
-    gdRelocAdrp[gdRelocN] := pos;
-    INC(gdRelocN)
+  AddImm(reg, reg, 0);
+  IF dataPageRelocN < maxDataPageReloc THEN
+    dataPageRelocOff[dataPageRelocN] := pos;
+    INC(dataPageRelocN)
   END
 END LoadDataPage;
 
-PROCEDURE Open*(modName: ARRAY OF CHAR);
+(** Emit ADRP+ADD for imported __DATA; importIdx indexes importNames. *)
+PROCEDURE LoadExtDataPage*(reg, importIdx: INTEGER);
+VAR pos: INTEGER;
+BEGIN
+  pos := Here();
+  Adrp(reg, 0);
+  AddImm(reg, reg, 0);
+  IF impDataPageRelocN < maxDataPageReloc THEN
+    impDataPageRelocOff[impDataPageRelocN] := pos;
+    impDataPageRelocImp[impDataPageRelocN] := importIdx;
+    INC(impDataPageRelocN)
+  END
+END LoadExtDataPage;
+
+PROCEDURE SetCompileFlags*(flags: INTEGER);
+BEGIN compileFlags := flags END SetCompileFlags;
+
+PROCEDURE Open*(name: ARRAY OF CHAR);
 VAR s: ARRAY 256 OF CHAR;
 BEGIN
   codeFile := Files.New('');
   Files.Set(codeR, codeFile, 0);
 
-  entryByteOffset := 0;
+  Strings.Copy(name, modName);
+  entryWordOffset := 0;
+  varSize := 0;
   strRelocN := 0;
-  gdRelocN := 0;
+  dataPageRelocN := 0;
+  impDataPageRelocN := 0;
+  importN := 0;
+  exportN := 0;
+  extCallRelocN := 0;
 
   Strings.Copy(M.outDir, s);
-  Strings.Append(modName, s);Strings.Append('.obj', s);
+  Strings.Append(name, s);Strings.Append('.obj', s);
   outFile := Files.New(s);
   IF outFile # NIL THEN
     Files.Set(outR, outFile, 0);
@@ -846,90 +1033,142 @@ BEGIN
   END
 END Open;
 
-(** Records the module entry offset (in bytes within the code stream).
-    Patched into the .obj header at Close time. *)
-PROCEDURE SetEntry*(offsetInBytes: INTEGER);
-BEGIN entryByteOffset := offsetInBytes
+(** Record module init proc offset in words. *)
+PROCEDURE SetEntry*(offsetInWords: INTEGER);
+BEGIN entryWordOffset := offsetInWords
 END SetEntry;
+
+PROCEDURE SetVarSize*(bytes: INTEGER);
+BEGIN varSize := bytes
+END SetVarSize;
+
+(** Add imported module name. Returns its import index. *)
+PROCEDURE AddImport*(name: ARRAY OF CHAR): INTEGER;
+VAR i: INTEGER;
+BEGIN
+  i := 0;
+  WHILE (i < importN) & (importNames[i] # name) DO INC(i) END;
+  IF (i = importN) & (importN < maxImports) THEN
+    Strings.Copy(name, importNames[importN]);
+    INC(importN)
+  END
+RETURN i END AddImport;
+
+(** Record export; isCmd FALSE (0) = procedure, TRUE (1) = command. *)
+PROCEDURE AddExport*(name: ARRAY OF CHAR; offWords: INTEGER; isCmd: BOOLEAN);
+BEGIN
+  IF exportN < maxExports THEN
+    Strings.Copy(name, exportNames[exportN]);
+    exportOff[exportN] := offWords;
+    exportIsCmd[exportN] := isCmd;
+    INC(exportN)
+  END
+END AddExport;
 
 PROCEDURE Init*;
 BEGIN
 END Init;
 
-PROCEDURE Close*;
-VAR R: Files.Rider;
-  x: BYTE;
-  strpF, relsF, gdrelF: Files.File;
-  codeLen, strpLen, relsLen, gdrelLen, i: INTEGER;
+(** Write NUL-terminated UTF-8 string. *)
+PROCEDURE WriteCStr(VAR R: Files.Rider; s: ARRAY OF CHAR);
+VAR zero: BYTE;
 BEGIN
-  (* Patch the entry-offset placeholder written by Open *)
-  Files.Set(outR, outFile, 4);
-  Files.WriteInt(outR, entryByteOffset);
+  Files.WriteString(R, s);
+  zero := 0; Files.Write(R, zero)
+END WriteCStr;
 
+PROCEDURE CopyAll(VAR R, dst: Files.Rider; src: Files.File);
+VAR x: BYTE;
+BEGIN
+  Files.Set(R, src, 0);
+  Files.Read(R, x);
+  WHILE ~R.eof DO Files.Write(dst, x); Files.Read(R, x) END
+END CopyAll;
+
+(** Writes .obj: header, meta, code, strpool, str/data/extCall/impData relocs. *)
+PROCEDURE Close*;
+VAR srcR: Files.Rider;
+  codeLen, strpLen, strRelocLen, dataPageRelocLen, metaLen, extCallRelocLen, impDataPageRelocLen, i: INTEGER;
+  startPos: INTEGER;
+BEGIN
   codeLen := Files.Length(codeFile);
 
-  strpF := Files.New('');
-  Files.Set(R, strpF, 0);
-  ST.WriteStrpSection(R);
-  strpLen := Files.Length(strpF);
+  Files.Set(outR, outFile, 0);
+  WHILE Files.Pos(outR) < objHeaderBytes DO Files.Write(outR, 0) END;
 
-  relsF := Files.New('');
-  Files.Set(R, relsF, 0);
-  Files.WriteInt(R, strRelocN);
+  startPos := Files.Pos(outR);
+  WriteCStr(outR, modName);
+  Files.WriteInt(outR, varSize);
+  Files.WriteInt(outR, importN);
+  i := 0;
+  WHILE i < importN DO WriteCStr(outR, importNames[i]); INC(i) END;
+  Files.WriteInt(outR, exportN);
+  i := 0;
+  WHILE i < exportN DO
+    WriteCStr(outR, exportNames[i]);
+    Files.WriteInt(outR, exportOff[i]);
+    Files.Write(outR, ORD(exportIsCmd[i]));
+    INC(i)
+  END;
+  metaLen := Files.Pos(outR) - startPos;
+
+  CopyAll(srcR, outR, codeFile);
+
+  startPos := Files.Pos(outR);
+  ST.WriteStrpSection(outR);
+  strpLen := Files.Pos(outR) - startPos;
+
+  startPos := Files.Pos(outR);
+  Files.WriteInt(outR, strRelocN);
   i := 0;
   WHILE i < strRelocN DO
-    Files.WriteInt(R, strRelocAdrp[i]);
-    Files.WriteInt(R, strRelocIdx[i]);
+    Files.WriteInt(outR, strRelocOff[i]);
+    Files.WriteInt(outR, strRelocIdx[i]);
     INC(i)
   END;
-  relsLen := Files.Length(relsF);
+  strRelocLen := Files.Pos(outR) - startPos;
 
-  gdrelF := Files.New('');
-  Files.Set(R, gdrelF, 0);
-  Files.WriteInt(R, gdRelocN);
+  startPos := Files.Pos(outR);
+  Files.WriteInt(outR, dataPageRelocN);
   i := 0;
-  WHILE i < gdRelocN DO
-    Files.WriteInt(R, gdRelocAdrp[i]);
+  WHILE i < dataPageRelocN DO
+    Files.WriteInt(outR, dataPageRelocOff[i]);
     INC(i)
   END;
-  gdrelLen := Files.Length(gdrelF);
+  dataPageRelocLen := Files.Pos(outR) - startPos;
+
+  startPos := Files.Pos(outR);
+  Files.WriteInt(outR, extCallRelocN);
+  i := 0;
+  WHILE i < extCallRelocN DO
+    Files.WriteInt(outR, extCallRelocOff[i]);
+    Files.WriteInt(outR, extCallRelocImp[i]);
+    WriteCStr(outR, extCallRelocName[i]);
+    INC(i)
+  END;
+  extCallRelocLen := Files.Pos(outR) - startPos;
+
+  startPos := Files.Pos(outR);
+  Files.WriteInt(outR, impDataPageRelocN);
+  i := 0;
+  WHILE i < impDataPageRelocN DO
+    Files.WriteInt(outR, impDataPageRelocOff[i]);
+    Files.WriteInt(outR, impDataPageRelocImp[i]);
+    INC(i)
+  END;
+  impDataPageRelocLen := Files.Pos(outR) - startPos;
 
   Files.Set(outR, outFile, 0);
   Files.WriteInt(outR, fileMark);
-  Files.WriteInt(outR, entryByteOffset);
+  Files.WriteInt(outR, entryWordOffset);
   Files.WriteInt(outR, codeLen);
   Files.WriteInt(outR, strpLen);
-  Files.WriteInt(outR, relsLen);
-  Files.WriteInt(outR, gdrelLen);
-  WHILE Files.Pos(outR) < objHeaderBytes DO Files.Write(outR, 0) END;
-
-  Files.Set(R, codeFile, 0);
-  Files.Read(R, x);
-  WHILE ~R.eof DO
-    Files.Write(outR, x);
-    Files.Read(R, x)
-  END;
-
-  Files.Set(R, strpF, 0);
-  Files.Read(R, x);
-  WHILE ~R.eof DO
-    Files.Write(outR, x);
-    Files.Read(R, x)
-  END;
-
-  Files.Set(R, relsF, 0);
-  Files.Read(R, x);
-  WHILE ~R.eof DO
-    Files.Write(outR, x);
-    Files.Read(R, x)
-  END;
-
-  Files.Set(R, gdrelF, 0);
-  Files.Read(R, x);
-  WHILE ~R.eof DO
-    Files.Write(outR, x);
-    Files.Read(R, x)
-  END;
+  Files.WriteInt(outR, strRelocLen);
+  Files.WriteInt(outR, dataPageRelocLen);
+  Files.WriteInt(outR, metaLen);
+  Files.WriteInt(outR, extCallRelocLen);
+  Files.WriteInt(outR, impDataPageRelocLen);
+  Files.WriteInt(outR, compileFlags);
 
   Files.Register(outFile)
 END Close;

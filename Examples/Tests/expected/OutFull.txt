@@ -1,0 +1,40 @@
+--- Int ---
+0
+42
+-42
+42
+   42
+  -42
+123456
+--- Hex ---
+0
+0000
+F
+10
+FF
+00FF
+0000DEAD
+100000000
+FFFFFFFFFFFFFFFF
+FFFFFFFFFFFFFFF0
+0000FFFFFFFFFFFFFFFF
+--- Real ---
+0.000000E+0
+1.500000E+0
+-1.500000E+0
+3.141589E+0
+--- RealFix ---
+0.000
+1.500
+-1.500
+3.14
+    0.5000
+--- LongReal ---
+2.500000E+0
+2.50
+--- Char ---
+AB
+--- String ---
+Hi!
+--- Flush ---
+done

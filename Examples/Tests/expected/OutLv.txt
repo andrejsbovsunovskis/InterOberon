@@ -1,0 +1,16 @@
+--- Litera un Virkne ---
+Sveiki!
+Sveiki, pasaule!
+--- Veselais ---
+  0   1   2   3   4 
+-42
+  2025
+--- Heks ---
+FF
+00FF
+--- Reālais / ReālaisFix / GaraisReālais ---
+1.500000E+0
+1.50
+-1.500
+2.500000E-1
+0.2500

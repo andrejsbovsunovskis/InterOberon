@@ -1,0 +1,5 @@
+Lib initialized
+Main initialized
+Initial: 100
+After +5: 105
+After +20: 125

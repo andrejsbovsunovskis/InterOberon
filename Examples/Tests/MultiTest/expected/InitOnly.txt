@@ -1,0 +1,2 @@
+Lib initialized
+InitOnly initialized; 100

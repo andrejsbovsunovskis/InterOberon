@@ -1,0 +1,12 @@
+--- Litera ---
+77
+--- Veselais ---
+42
+-17
+--- Rinda ---
+hello world
+Šī ir rinda
+--- Reālais ---
+3.5
+--- Pabeigts ---
+jā

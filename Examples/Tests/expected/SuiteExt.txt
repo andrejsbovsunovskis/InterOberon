@@ -1,0 +1,22 @@
+5 30 7
+1 5 3 10
+a-is-Dog
+a-not-Puppy
+a-not-Cat
+a-is-Animal
+p-is-Dog
+p-is-Puppy
+p-is-Animal
+c-not-Dog
+c-is-Cat
+11
+22
+10:dog
+1:puppy
+4:cat
+11
+11
+11
+dog
+dog
+9

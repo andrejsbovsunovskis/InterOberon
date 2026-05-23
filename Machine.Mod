@@ -1,14 +1,32 @@
 MODULE Machine;
-IMPORT Out, Lang, Platform, Utf8, Strings, SYSTEM;
+IMPORT Out, Lang, Platform, Utf8, Strings, Files, SYSTEM;
+
+CONST
+  (** Target-architecture properties.  Currently the InterOberon
+      backend is ARM64-only, so these are hard-wired.  When/if a
+      32-bit target is added, flip these two constants and the rest
+      of the compiler (SymTable's adrIntType, Parser's LONG/SHORT
+      handling for ADRINT) will follow automatically. *)
+  Is64Bit* = TRUE;
+  WordSize* = 8;
+
+  symFileMark* = ORD('S') + 256 * (ORD('Y') + 256 * (ORD('M') + 256 * 1));
+  objFileMark* = ORD('A') + 256 * (ORD('R') + 256 * (ORD('M') + 256 * 1));
+  objHeaderBytes* = 40;
+  objCompileFlagsOff* = 36;
+  compileFlagNoAssert* = 1;
 
 TYPE
   LONGINT* = SYSTEM.INT64;
-  LONGREAL* = REAL; (*!FIXME*)
+  LONGREAL* = SYSTEM.REAL64;
   SHORTCHAR = Utf8.SHORTCHAR;
 
 VAR
   maxLongInt*, minLongInt*: LONGINT;
-  outDir*, outExe*: ARRAY 256 OF CHAR;
+  buildDir*, libCacheDir*, outDir*, outExe*, outExeDir*: ARRAY 256 OF CHAR;
+  compilingFromLib*: BOOLEAN;
+  userModN: INTEGER;
+  userMods: ARRAY 64, 32 OF CHAR;
 
 (** Run a command in the OS. For chmod and signing the executable. *)
 PROCEDURE Exec*(command: ARRAY OF CHAR): INTEGER;
@@ -136,34 +154,199 @@ BEGIN
   END
 RETURN x END ROR64;
 
-PROCEDURE SetOutDir*(path: ARRAY OF CHAR);
-VAR n, i, last: INTEGER;
+PROCEDURE EnsureDir*(dir: ARRAY OF CHAR): BOOLEAN;
+VAR cmd: ARRAY 512 OF CHAR;
+  err: INTEGER;
 BEGIN
+  IF dir = '' THEN err := 0
+  ELSE
+    Strings.Copy('mkdir -p ', cmd);
+    Strings.Append(dir, cmd);
+    err := Exec(cmd)
+  END
+RETURN err = 0 END EnsureDir;
+
+PROCEDURE SetBuildDir*(path: ARRAY OF CHAR);
+VAR n: INTEGER;
+BEGIN
+  Strings.Copy(path, buildDir);
+  n := Strings.Length(buildDir);
+  IF (n > 0) & (buildDir[n - 1] # '/') THEN
+    buildDir[n] := '/'; buildDir[n + 1] := 0X
+  END
+END SetBuildDir;
+
+PROCEDURE SetLibCacheDir*(path: ARRAY OF CHAR);
+VAR n: INTEGER;
+BEGIN
+  Strings.Copy(path, libCacheDir);
+  n := Strings.Length(libCacheDir);
+  IF (n > 0) & (libCacheDir[n - 1] # '/') THEN
+    libCacheDir[n] := '/'; libCacheDir[n + 1] := 0X
+  END
+END SetLibCacheDir;
+
+PROCEDURE SetOutDir*(path: ARRAY OF CHAR);
+VAR n: INTEGER;
+BEGIN
+  outExe := '';
+  outExeDir := '';
   n := Strings.Length(path);
   IF (n > 0) & (path[n - 1] = '/') THEN
-    (* Directory mode: -o dir/ *)
-    Strings.Copy(path, outDir);
-    outExe := ''
+    Strings.Copy(path, outExeDir);
+    n := Strings.Length(outExeDir);
+    IF (n > 0) & (outExeDir[n - 1] # '/') THEN
+      outExeDir[n] := '/'; outExeDir[n + 1] := 0X
+    END
   ELSIF n > 0 THEN
-    (* Filename mode: -o name or -o dir/name *)
-    last := -1; i := 0;
-    WHILE i < n DO
-      IF path[i] = '/' THEN last := i END;
-      INC(i)
-    END;
-    IF last >= 0 THEN
-      Strings.Copy(path, outDir);
-      outDir[last + 1] := 0X
-    ELSE
-      outDir := ''
-    END;
     Strings.Copy(path, outExe)
   END
 END SetOutDir;
 
+PROCEDURE EnsureBuildDir*(): BOOLEAN;
+RETURN EnsureDir(buildDir) END EnsureBuildDir;
+
+PROCEDURE EnsureLibCacheDir*(): BOOLEAN;
+RETURN EnsureDir(libCacheDir) END EnsureLibCacheDir;
+
+(** Legacy name: ensure the active object/symbol output directory exists. *)
+PROCEDURE EnsureOutDir*(): BOOLEAN;
+RETURN EnsureBuildDir() END EnsureOutDir;
+
+PROCEDURE ArtifactPath*(dir, modName, ext: ARRAY OF CHAR; VAR path: ARRAY OF CHAR);
+BEGIN
+  Strings.Copy(dir, path);
+  Strings.Append(modName, path);
+  Strings.Append(ext, path)
+END ArtifactPath;
+
+PROCEDURE SymMarkOk*(path: ARRAY OF CHAR): BOOLEAN;
+VAR F: Files.File;
+  R: Files.Rider;
+  mark: INTEGER;
+  ok: BOOLEAN;
+BEGIN
+  ok := FALSE;
+  F := Files.Old(path);
+  IF F # NIL THEN
+    Files.Set(R, F, 0);
+    Files.ReadInt(R, mark);
+    ok := mark = symFileMark
+  END
+RETURN ok END SymMarkOk;
+
+PROCEDURE ObjMarkOk*(path: ARRAY OF CHAR): BOOLEAN;
+VAR F: Files.File;
+  R: Files.Rider;
+  mark: INTEGER;
+  ok: BOOLEAN;
+BEGIN
+  ok := FALSE;
+  F := Files.Old(path);
+  IF F # NIL THEN
+    Files.Set(R, F, 0);
+    Files.ReadInt(R, mark);
+    ok := mark = objFileMark
+  END
+RETURN ok END ObjMarkOk;
+
+PROCEDURE ObjCompileFlags*(path: ARRAY OF CHAR): INTEGER;
+VAR F: Files.File;
+  R: Files.Rider;
+  flags: INTEGER;
+BEGIN
+  flags := -1;
+  F := Files.Old(path);
+  IF F # NIL THEN
+    Files.Set(R, F, objCompileFlagsOff);
+    Files.ReadInt(R, flags)
+  END
+RETURN flags END ObjCompileFlags;
+
+PROCEDURE ObjArtifactOk*(path: ARRAY OF CHAR; expectedFlags: INTEGER): BOOLEAN;
+RETURN ObjMarkOk(path) & (ObjCompileFlags(path) = expectedFlags) END ObjArtifactOk;
+
+PROCEDURE TrySymInDir(dir, modName: ARRAY OF CHAR; VAR path: ARRAY OF CHAR): BOOLEAN;
+BEGIN
+  ArtifactPath(dir, modName, '.sym', path);
+RETURN SymMarkOk(path) END TrySymInDir;
+
+PROCEDURE IsUserModule*(modName: ARRAY OF CHAR): BOOLEAN;
+VAR i: INTEGER;
+  ok: BOOLEAN;
+BEGIN
+  ok := FALSE;
+  i := 0;
+  WHILE ~ok & (i < userModN) DO
+    IF userMods[i] = modName THEN ok := TRUE END;
+    INC(i)
+  END
+RETURN ok END IsUserModule;
+
+PROCEDURE RegisterUserModule*(modName: ARRAY OF CHAR);
+VAR i: INTEGER;
+BEGIN
+  IF ~IsUserModule(modName) & (userModN < LEN(userMods)) THEN
+    Strings.Copy(modName, userMods[userModN]);
+    INC(userModN)
+  END
+END RegisterUserModule;
+
+PROCEDURE ResetUserModules*;
+BEGIN userModN := 0 END ResetUserModules;
+
+(** Locate a .sym for import. Lib importers use lib cache only. *)
+PROCEDURE FindSymFile*(modName: ARRAY OF CHAR; VAR path: ARRAY OF CHAR): BOOLEAN;
+VAR ok, user: BOOLEAN;
+BEGIN
+  ok := FALSE;
+  IF compilingFromLib THEN
+    IF libCacheDir # '' THEN ok := TrySymInDir(libCacheDir, modName, path) END
+  ELSE
+    user := IsUserModule(modName);
+    IF user & (buildDir # '') THEN ok := TrySymInDir(buildDir, modName, path) END;
+    IF ~ok & (libCacheDir # '') THEN ok := TrySymInDir(libCacheDir, modName, path) END;
+    IF ~ok & ~user & (buildDir # '') THEN ok := TrySymInDir(buildDir, modName, path) END
+  END
+RETURN ok END FindSymFile;
+
+PROCEDURE TryObjInDir(dir, modName: ARRAY OF CHAR; VAR path: ARRAY OF CHAR): BOOLEAN;
+BEGIN
+  ArtifactPath(dir, modName, '.obj', path);
+RETURN ObjMarkOk(path) END TryObjInDir;
+
+PROCEDURE FindObjFile*(modName: ARRAY OF CHAR; VAR path: ARRAY OF CHAR): BOOLEAN;
+VAR ok: BOOLEAN;
+BEGIN
+  ok := FALSE;
+  IF buildDir # '' THEN ok := TryObjInDir(buildDir, modName, path) END;
+  IF ~ok & (libCacheDir # '') THEN ok := TryObjInDir(libCacheDir, modName, path) END
+RETURN ok END FindObjFile;
+
+(** Set active .sym/.obj output directory for the module being compiled. *)
+PROCEDURE SetArtifactDir*(dir: ARRAY OF CHAR);
+BEGIN Strings.Copy(dir, outDir) END SetArtifactDir;
+
+PROCEDURE SetCompilingFromLib*(fromLib: BOOLEAN);
+BEGIN compilingFromLib := fromLib END SetCompilingFromLib;
+
+PROCEDURE FileModTime*(name: ARRAY OF CHAR): INTEGER;
+VAR F: Files.File;
+  t, d: INTEGER;
+BEGIN
+  t := 0;
+  F := Files.Old(name);
+  IF F # NIL THEN Files.GetDate(F, t, d) END
+RETURN t END FileModTime;
+
 BEGIN
   maxLongInt := LSL64(LONG(7FFFFFFFH), 32) + LONG(7FFFFFFFH) * 2 + 1;
   minLongInt := -maxLongInt - 1;
-  outDir := '';
-  outExe := ''
+  buildDir := '_Build/';
+  libCacheDir := '';
+  outDir := '_Build/';
+  outExe := '';
+  outExeDir := '';
+  compilingFromLib := FALSE;
+  userModN := 0
 END Machine.

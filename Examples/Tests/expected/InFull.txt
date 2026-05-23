@@ -1,0 +1,30 @@
+--- Char ---
+65
+--- Int / LongInt ---
+42
+255
+-7
+12345
+-32000
+--- Name ---
+путь/файл
+файл
+LONGabc
+--- String (single/double quotes) ---
+apple
+banana
+--- Line ---
+
+after strings
+LONGabc
+nextline
+unquoted
+--- Real / LongReal ---
+1.50
+-0.3
+3.00
+3
+--- sticky Done ---
+not done
+skipped
+reopened

@@ -1,15 +1,22 @@
 MODULE Emitter;
-IMPORT ST := SymTable, S := Scanner, G := Generator, E := ErrorMsg, Files, Strings, M := Machine, SYSTEM;
+IMPORT ST := SymTable, S := Scanner, G := Generator, E := ErrorMsg, Files,
+  Strings, M := Machine, SYSTEM;
 
 CONST
   maxGenReg = 18;  (** Last general-purpose register (x18) *)
   firstCSReg = 19; (** First callee-saved register (x19) *)
   maxCSReg = 28;   (** Last callee-saved register (x28) *)
+  ieeeExpMask = 0FFH;
+  ieeeFracMask = 07FFFFFH;
+  ieeeOne = 03F800000H;
+  ieeeTwo = 040000000H;
+  ieeeTiny = 034800000H;
+  ieeeMsbFrac = 0800000H;
 
   (** Values of Item.mode **)
   (** Some of Object Classes from SymTable are also valid *)
   Reg*  = 10;
-  RegI* = 11; (** Register indirect: address in register r *)
+  RegI* = 11; (** Register indirect: address in register r — exported for Parser *)
   Cond* = 12; (** Condition expression result *)
 
   SP = G.SP;
@@ -33,6 +40,7 @@ CONST
 
 TYPE
   LONGINT = M.LONGINT;
+  LONGREAL = M.LONGREAL;
 
   (** Item is a temporary object that exists during statement parsing.
         |  mode |     a     |     b     |      r      |
@@ -47,14 +55,20 @@ TYPE
     type*: ST.Type;
     a*: LONGINT; (** Value (Const) / address (Var) / jump-list head (Cond) *)
     b*, r*: INTEGER; (** b: level / secondary; r: register / cond code *)
-    rdo*: BOOLEAN (** Read-only: TRUE for non-VAR array param elements *)
+    rdo*: BOOLEAN; (** Read-only: TRUE for non-VAR array param elements *)
+    extImp*: INTEGER; (** Import index for module-level Var, or -1 for own __DATA *)
   END;
 
 VAR
   RH: INTEGER; (** Next free general-purpose register (x0..x18) *)
   SH: INTEGER; (** Next free callee-saved register (x19..x28) *)
-
   cmpNeeded: BOOLEAN;
+  assertModIdx, assertModLen, assertProcIdx, assertProcLen: INTEGER;
+  noAssert: BOOLEAN;
+
+PROCEDURE FixRH*(val: INTEGER);
+BEGIN RH := val
+END FixRH;
 
 (** Item Constructors **)
 
@@ -63,7 +77,8 @@ BEGIN
   x.mode := ST.Const;
   x.type := type;
   x.a := val;
-  x.rdo := FALSE
+  x.rdo := FALSE;
+  x.extImp := -1
 END MakeConstItem;
 
 PROCEDURE MakeStringConstItem*(VAR x: Item; strIdx, charLen: INTEGER);
@@ -71,7 +86,8 @@ BEGIN
   x.mode := ST.Const;
   x.type := ST.MakeStringType(charLen);
   x.a := strIdx;
-  x.rdo := FALSE
+  x.rdo := FALSE;
+  x.extImp := -1
 END MakeStringConstItem;
 
 PROCEDURE MakeItem*(VAR x: Item; obj: ST.Object);
@@ -80,25 +96,167 @@ BEGIN
   x.type := obj.type;
   x.b := obj.lev;
   x.rdo := obj.readOnly;
+  x.extImp := -1;
+  IF (obj.class = ST.Var) & (obj.lev = 0) & obj.external THEN
+    x.extImp := obj.importIdx
+  END;
   IF (obj.class IN {ST.Var, ST.VarPar}) & (obj.lev > 0) & (obj.lev < ST.curLev) THEN
     S.Mark(E.outerLocalAccess)
   END;
   IF obj.class = ST.Const THEN
     IF (obj.type # NIL) & (obj.type.form = ST.Proc) THEN
       x.a := obj.address
+    ELSIF (obj.type # NIL) & (obj.type.form = ST.LongReal) THEN
+      x.a := SYSTEM.VAL(LONGINT, obj.realVal)
     ELSIF (obj.type # NIL) & (obj.type.form = ST.Real) THEN
-      x.a := SYSTEM.VAL(INTEGER, SYSTEM.VAL(REAL, obj.realVal))
+      x.a := SYSTEM.VAL(LONGINT, SYSTEM.VAL(REAL, obj.realVal))
     ELSE
       x.a := obj.intVal
     END
   ELSE
     x.a := obj.address
   END;
-  IF (obj.class = ST.VarPar) & (obj.type.form = ST.Array)
+  IF (obj.class IN {ST.Var, ST.VarPar}) & (obj.type.form = ST.Array)
       & (obj.type.openRank > 0) THEN
     x.b := M.SHORT(x.a) + 8 (* address of first hidden length parameter *)
   END
 END MakeItem;
+
+(** Emit ADRP for own or imported __DATA page. *)
+PROCEDURE DataPageAdrp(reg, extImp: INTEGER);
+BEGIN
+  IF extImp >= 0 THEN G.LoadExtDataPage(reg, extImp)
+  ELSE G.LoadDataPage(reg)
+  END
+END DataPageAdrp;
+
+(** Returns TRUE if ARM64 scaled unsigned offset can encode `off`. *)
+PROCEDURE MemImmFits(off, size: INTEGER): BOOLEAN;
+BEGIN
+RETURN (off >= 0) & (off MOD size = 0) & (off DIV size < 1000H)
+END MemImmFits;
+
+PROCEDURE AddImmFits(off: INTEGER): BOOLEAN;
+VAR a: INTEGER;
+BEGIN
+  IF off < 0 THEN a := -off ELSE a := off END;
+  IF (a # 0) & (a MOD 1000H = 0) THEN a := a DIV 1000H END;
+RETURN a MOD 1000H = a
+END AddImmFits;
+
+PROCEDURE AddrOffset(reg, base, off: INTEGER);
+BEGIN
+  IF AddImmFits(off) THEN G.AddImm(reg, base, off)
+  ELSE
+    G.MovImm(reg, off);
+    G.Add(reg, base, reg)
+  END
+END AddrOffset;
+
+PROCEDURE AdjustSP(off: INTEGER);
+VAR rest, q, chunk: INTEGER;
+BEGIN
+  rest := off;
+  WHILE rest # 0 DO
+    IF rest < 0 THEN
+      IF -rest >= 1000H THEN
+        q := (-rest) DIV 1000H;
+        IF q >= 1000H THEN q := 0FFFH END;
+        chunk := q * 1000H
+      ELSE chunk := -rest
+      END;
+      G.AddImm(SP, SP, -chunk);
+      rest := rest + chunk
+    ELSE
+      IF rest >= 1000H THEN
+        q := rest DIV 1000H;
+        IF q >= 1000H THEN q := 0FFFH END;
+        chunk := q * 1000H
+      ELSE chunk := rest
+      END;
+      G.AddImm(SP, SP, chunk);
+      rest := rest - chunk
+    END
+  END
+END AdjustSP;
+
+PROCEDURE LoadAt(rt, rn, off, size: INTEGER);
+VAR scratch: INTEGER;
+BEGIN
+  IF MemImmFits(off, size) THEN G.LdrImm(rt, rn, off, size)
+  ELSE
+    IF rt = rn THEN
+      scratch := RH;
+      IF scratch = rt THEN INC(scratch) END;
+      AddrOffset(scratch, rn, off);
+      G.LdrImm(rt, scratch, 0, size)
+    ELSE
+      AddrOffset(rt, rn, off);
+      G.LdrImm(rt, rt, 0, size)
+    END
+  END
+END LoadAt;
+
+PROCEDURE StoreAt(rt, rn, off, size: INTEGER);
+VAR scratch: INTEGER;
+BEGIN
+  IF MemImmFits(off, size) THEN G.StrImm(rt, rn, off, size)
+  ELSE
+    scratch := RH;
+    IF (scratch = rt) OR (scratch = rn) THEN INC(scratch) END;
+    IF (scratch = rt) OR (scratch = rn) THEN INC(scratch) END;
+    AddrOffset(scratch, rn, off);
+    G.StrImm(rt, scratch, 0, size)
+  END
+END StoreAt;
+
+PROCEDURE FLoadAt(ft, rn, off: INTEGER);
+VAR scratch: INTEGER;
+BEGIN
+  IF MemImmFits(off, 4) THEN G.FLdrImm(ft, rn, off)
+  ELSE
+    scratch := RH;
+    IF scratch = rn THEN INC(scratch) END;
+    AddrOffset(scratch, rn, off);
+    G.FLdrImm(ft, scratch, 0)
+  END
+END FLoadAt;
+
+PROCEDURE FStoreAt(ft, rn, off: INTEGER);
+VAR scratch: INTEGER;
+BEGIN
+  IF MemImmFits(off, 4) THEN G.FStrImm(ft, rn, off)
+  ELSE
+    scratch := RH;
+    IF scratch = rn THEN INC(scratch) END;
+    AddrOffset(scratch, rn, off);
+    G.FStrImm(ft, scratch, 0)
+  END
+END FStoreAt;
+
+PROCEDURE FDLoadAt(ft, rn, off: INTEGER);
+VAR scratch: INTEGER;
+BEGIN
+  IF MemImmFits(off, 8) THEN G.DLdrImm(ft, rn, off)
+  ELSE
+    scratch := RH;
+    IF scratch = rn THEN INC(scratch) END;
+    AddrOffset(scratch, rn, off);
+    G.DLdrImm(ft, scratch, 0)
+  END
+END FDLoadAt;
+
+PROCEDURE FDStoreAt(ft, rn, off: INTEGER);
+VAR scratch: INTEGER;
+BEGIN
+  IF MemImmFits(off, 8) THEN G.DStrImm(ft, rn, off)
+  ELSE
+    scratch := RH;
+    IF scratch = rn THEN INC(scratch) END;
+    AddrOffset(scratch, rn, off);
+    G.DStrImm(ft, scratch, 0)
+  END
+END FDStoreAt;
 
 (** Load in registers **)
 
@@ -155,13 +313,46 @@ BEGIN
   FixLinkWith(L, G.Here())
 END FixLink;
 
-PROCEDURE Load(VAR x: Item);
-VAR op, q, addr: INTEGER;
+PROCEDURE MaskSetConst*(VAR x: Item);
+BEGIN
+  IF x.type.size = 1 THEN x.a := x.a MOD 100H
+  ELSIF x.type.size = 2 THEN x.a := x.a MOD 10000H
+  END
+END MaskSetConst;
+
+PROCEDURE MaskSetReg(reg: INTEGER; size: INTEGER);
+VAR mask: INTEGER;
+BEGIN
+  IF size <= 4 THEN
+    mask := AllocR();
+    IF size = 1 THEN G.MovImm(mask, 0FFH)
+    ELSIF size = 2 THEN G.MovImm(mask, 0FFFFH)
+    ELSE G.MovImm(mask, 0FFFFFFFFH)
+    END;
+    G.And(reg, reg, mask);
+    DEC(RH)
+  END
+END MaskSetReg;
+
+PROCEDURE SignExtendForm*(reg: INTEGER; form: INTEGER);
+BEGIN
+  IF form = ST.TinyInt THEN G.Sxtb(reg, reg)
+  ELSIF form = ST.ShortInt THEN G.Sxth(reg, reg)
+  ELSIF form = ST.Int THEN G.Sxtw(reg, reg)
+  END
+END SignExtendForm;
+
+PROCEDURE Load*(VAR x: Item);
+VAR op, q, addr, endL: INTEGER;
 BEGIN
   IF x.mode # Reg THEN
     IF x.mode = ST.Const THEN
       IF x.type.form = ST.String THEN
         S.Mark(E.incompatible)
+      ELSIF x.type.form = ST.LongReal THEN
+        G.MovImm(RH, x.a);
+        G.FMovXtoD(RH, RH);
+        G.FMovDtoX(RH, RH)
       ELSIF x.type.form = ST.Real THEN
         G.MovImm(RH, x.a);
         G.FMovWtoS(RH, RH)
@@ -172,60 +363,237 @@ BEGIN
       END;
       x.r := AllocR()
     ELSIF x.mode = RegI THEN
-      IF x.type.form = ST.Real THEN
-        G.FLdrImm(x.r, x.r, 0)
+      IF x.type.form = ST.LongReal THEN
+        FDLoadAt(x.r, x.r, 0);
+        G.FMovDtoX(x.r, x.r)
+      ELSIF x.type.form = ST.Real THEN
+        FLoadAt(x.r, x.r, 0)
       ELSE
-        G.LdrImm(x.r, x.r, 0, x.type.size);
-        IF x.type.form = ST.ShortInt THEN G.Sxth(x.r, x.r)
-        ELSIF x.type.form IN {ST.Int, ST.Byte, ST.Set} THEN G.Sxtw(x.r, x.r)
+        LoadAt(x.r, x.r, 0, x.type.size);
+        IF ST.IsIntegerForm(x.type.form) & (x.type.form # ST.Byte)
+            & (x.type.form # ST.LongInt) THEN SignExtendForm(x.r, x.type.form)
+        ELSIF ST.IsSetForm(x.type.form) & (x.type.size = 4) THEN G.Sxtw(x.r, x.r)
         END
       END;
       cmpNeeded := TRUE
     ELSIF x.mode = ST.Var THEN
       IF x.b > 0 THEN (* local variable or value parameter *)
-        IF x.type.form = ST.Real THEN
-          G.FLdrImm(RH, FP, M.SHORT(x.a))
+        IF x.type.form = ST.LongReal THEN
+          FDLoadAt(RH, FP, M.SHORT(x.a));
+          G.FMovDtoX(RH, RH)
+        ELSIF x.type.form = ST.Real THEN
+          FLoadAt(RH, FP, M.SHORT(x.a));
+          (* ProcPrologue spills x0.. into FP-relative param slots. *)
+          G.FMovStoW(RH, RH)
         ELSE
-          G.LdrImm(RH, FP, M.SHORT(x.a), x.type.size);
-          IF x.type.form = ST.ShortInt THEN G.Sxth(RH, RH)
-          ELSIF x.type.form IN {ST.Int, ST.Byte, ST.Set} THEN G.Sxtw(RH, RH)
+          LoadAt(RH, FP, M.SHORT(x.a), x.type.size);
+          IF ST.IsIntegerForm(x.type.form) & (x.type.form # ST.Byte)
+              & (x.type.form # ST.LongInt) THEN SignExtendForm(RH, x.type.form)
+          ELSIF ST.IsSetForm(x.type.form) & (x.type.size = 4) THEN G.Sxtw(RH, RH)
           END
         END
       ELSE (* global variable *)
-        G.LoadDataPage(RH);
-        IF x.type.form = ST.Real THEN
-          G.FLdrImm(RH, RH, M.SHORT(x.a))
+        DataPageAdrp(RH, x.extImp);
+        IF x.type.form = ST.LongReal THEN
+          FDLoadAt(RH, RH, M.SHORT(x.a));
+          G.FMovDtoX(RH, RH)
+        ELSIF x.type.form = ST.Real THEN
+          FLoadAt(RH, RH, M.SHORT(x.a));
+          G.FMovStoW(RH, RH)
         ELSE
-          G.LdrImm(RH, RH, M.SHORT(x.a), x.type.size);
-          IF x.type.form = ST.ShortInt THEN G.Sxth(RH, RH)
-          ELSIF x.type.form IN {ST.Int, ST.Byte, ST.Set} THEN G.Sxtw(RH, RH)
+          LoadAt(RH, RH, M.SHORT(x.a), x.type.size);
+          IF ST.IsIntegerForm(x.type.form) & (x.type.form # ST.Byte)
+              & (x.type.form # ST.LongInt) THEN SignExtendForm(RH, x.type.form)
+          ELSIF ST.IsSetForm(x.type.form) & (x.type.size = 4) THEN G.Sxtw(RH, RH)
           END
         END
       END;
       cmpNeeded := TRUE;
       x.r := AllocR()
     ELSIF x.mode = ST.VarPar THEN (* VAR parameter: load address, then value *)
-      G.LdrImm(RH, FP, M.SHORT(x.a), 8); (* load pointer from stack frame *)
-      IF x.type.form = ST.Real THEN
-        G.FLdrImm(RH, RH, 0)
+      LoadAt(RH, FP, M.SHORT(x.a), 8); (* load pointer from stack frame *)
+      IF x.type.form = ST.LongReal THEN
+        FDLoadAt(RH, RH, 0);
+        G.FMovDtoX(RH, RH)
+      ELSIF x.type.form = ST.Real THEN
+        FLoadAt(RH, RH, 0)
       ELSE
-        G.LdrImm(RH, RH, 0, x.type.size);
-        IF x.type.form = ST.ShortInt THEN G.Sxth(RH, RH)
-        ELSIF x.type.form IN {ST.Int, ST.Byte, ST.Set} THEN G.Sxtw(RH, RH)
+        LoadAt(RH, RH, 0, x.type.size);
+        IF ST.IsIntegerForm(x.type.form) & (x.type.form # ST.Byte)
+            & (x.type.form # ST.LongInt) THEN SignExtendForm(RH, x.type.form)
+        ELSIF ST.IsSetForm(x.type.form) & (x.type.size = 4) THEN G.Sxtw(RH, RH)
+        ELSIF ST.IsSetForm(x.type.form) & (x.type.size = 1) THEN MaskSetReg(RH, x.type.size)
         END
       END;
       cmpNeeded := TRUE;
       x.r := AllocR()
     ELSIF x.mode = Cond THEN
-      FixLink(x.b);
-      FixLinkWith(M.SHORT(x.a), G.Here()); (* Cond false-list *)
-      (* CSINC Xd, xzr, xzr, Negated(x.r) = CSET Xd, x.r *)
-      G.CSInc(RH, SP, SP, Negated(x.r));
-      x.r := AllocR()
+      IF (M.SHORT(x.a) # 0) OR (x.b # 0) THEN
+        (* AND/OR chains: false and true lists encode control flow;
+           materialise 0/1 explicitly instead of one CSINC on x.r. *)
+        FixLink(x.b);
+        G.MovImm(RH, 1);
+        endL := 0;
+        G.BCond(14, endL);
+        endL := G.Here() - 1;
+        FixLinkWith(M.SHORT(x.a), G.Here());
+        G.MovImm(RH, 0);
+        FixLinkWith(endL, G.Here());
+        x.r := AllocR()
+      ELSE
+        FixLink(x.b);
+        FixLinkWith(M.SHORT(x.a), G.Here());
+        G.CSInc(RH, SP, SP, Negated(x.r));
+        x.r := AllocR()
+      END
     END;
     x.mode := Reg
   END
 END Load;
+
+PROCEDURE SetBitsConst(v: LONGINT; dst: ST.Type): LONGINT;
+VAR r: LONGINT;
+BEGIN
+  IF dst.size = 1 THEN r := v MOD 100H
+  ELSIF dst.size = 2 THEN r := v MOD 10000H
+  ELSIF dst.size = 4 THEN r := M.LONG(M.SHORT(v))
+  ELSE r := v
+  END
+RETURN r END SetBitsConst;
+
+PROCEDURE OrdSetConst(v: LONGINT; src, dst: ST.Type): LONGINT;
+VAR r: LONGINT; srcSz, dstSz: INTEGER;
+BEGIN
+  r := SetBitsConst(v, src);
+  srcSz := src.size; dstSz := dst.size;
+  IF dstSz < srcSz THEN
+    IF srcSz = 8 THEN r := M.LONG(M.SHORT(r)); srcSz := 4 END;
+    IF (srcSz = 4) & (dstSz <= 2) THEN r := M.LONG(M.SHORT(r)); srcSz := 2 END;
+    IF (srcSz = 2) & (dstSz = 1) THEN r := M.LONG(M.SHORT(M.SHORT(r) MOD 100H)); srcSz := 1 END
+  ELSIF (dst.form = ST.LongInt) & (srcSz = 8) THEN r := M.LONG(M.SHORT(M.SHORT(r)))
+  ELSIF dstSz > srcSz THEN
+    IF srcSz = 1 THEN
+      IF r >= 80H THEN r := r - 100H END
+    ELSIF srcSz = 2 THEN r := M.LONG(M.SHORT(r))
+    ELSIF srcSz = 4 THEN r := M.LONG(M.SHORT(r))
+    END
+  END;
+  IF dst.form = ST.Byte THEN r := r MOD 100H
+  ELSIF dst.form = ST.TinyInt THEN
+    r := r MOD 100H;
+    IF r >= 80H THEN r := r - 100H END
+  ELSIF dst.form = ST.ShortInt THEN r := M.LONG(M.SHORT(r))
+  ELSIF (dst.form = ST.Int) & (srcSz = 8) THEN r := M.LONG(M.SHORT(r))
+  END
+RETURN r END OrdSetConst;
+
+PROCEDURE PromoteIntConst(v: LONGINT; src: ST.Type; dr: INTEGER): LONGINT;
+VAR r: LONGINT; ir: INTEGER;
+BEGIN
+  IF src.form = ST.Byte THEN r := v MOD 100H; ir := 0
+  ELSE r := v; ir := ST.IntegerRank(src.form)
+  END;
+  WHILE ir < dr DO
+    IF ir = 0 THEN
+      IF r >= 80H THEN r := r - 100H END
+    ELSIF ir = 1 THEN r := M.LONG(M.SHORT(r))
+    ELSIF ir = 2 THEN r := M.LONG(M.SHORT(r))
+    END;
+    INC(ir)
+  END
+RETURN r END PromoteIntConst;
+
+PROCEDURE ValIntFromSet(VAR x: Item; y: Item; dst: ST.Type);
+VAR srcSz, dstSz, mask: INTEGER;
+BEGIN
+  IF y.mode = ST.Const THEN
+    MakeConstItem(x, dst, OrdSetConst(y.a, y.type, dst))
+  ELSE
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    Load(x);
+    MaskSetReg(x.r, y.type.size);
+    srcSz := y.type.size; dstSz := dst.size;
+    IF dstSz < srcSz THEN
+      IF srcSz = 8 THEN G.Sxtw(x.r, x.r); srcSz := 4 END;
+      IF (srcSz = 4) & (dstSz <= 2) THEN G.Sxth(x.r, x.r); srcSz := 2 END;
+      IF (srcSz = 2) & (dstSz = 1) THEN G.Sxtb(x.r, x.r); srcSz := 1 END;
+      IF dst.form = ST.Byte THEN
+        mask := AllocR(); G.MovImm(mask, 0FFH); G.And(x.r, x.r, mask); DEC(RH)
+      END
+    ELSIF dstSz >= srcSz THEN
+      IF srcSz = 1 THEN G.Sxtb(x.r, x.r)
+      ELSIF srcSz = 2 THEN G.Sxth(x.r, x.r)
+      ELSIF srcSz = 4 THEN G.Sxtw(x.r, x.r)
+      ELSIF (srcSz = 8) & (dst.form = ST.LongInt) THEN G.Sxtw(x.r, x.r)
+      END;
+      IF dst.form = ST.Byte THEN
+        mask := AllocR(); G.MovImm(mask, 0FFH); G.And(x.r, x.r, mask); DEC(RH)
+      END
+    END;
+    x.type := dst
+  END
+END ValIntFromSet;
+
+PROCEDURE ValSetFromInt(VAR x: Item; y: Item; dst: ST.Type);
+VAR srcSz, dstSz, ir, dr, mask: INTEGER;
+BEGIN
+  IF y.mode = ST.Const THEN
+    dr := ST.SetRank(dst.form);
+    IF y.type.form = ST.Byte THEN
+      MakeConstItem(x, dst, SetBitsConst(y.a MOD 100H, dst))
+    ELSE
+      MakeConstItem(x, dst, SetBitsConst(PromoteIntConst(y.a, y.type, dr), dst))
+    END
+  ELSE
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    Load(x);
+    IF y.type.form = ST.Byte THEN
+      mask := AllocR(); G.MovImm(mask, 0FFH); G.And(x.r, x.r, mask); DEC(RH);
+      srcSz := 1
+    ELSE
+      srcSz := y.type.size;
+      ir := ST.IntegerRank(y.type.form);
+      dr := ST.SetRank(dst.form);
+      WHILE ir < dr DO
+        IF srcSz = 1 THEN G.Sxtb(x.r, x.r)
+        ELSIF srcSz = 2 THEN G.Sxth(x.r, x.r)
+        ELSIF srcSz = 4 THEN G.Sxtw(x.r, x.r)
+        END;
+        INC(ir);
+        IF ir = 1 THEN srcSz := 2
+        ELSIF ir = 2 THEN srcSz := 4
+        ELSIF ir = 3 THEN srcSz := 8
+        END
+      END
+    END;
+    dstSz := dst.size;
+    IF dstSz < srcSz THEN MaskSetReg(x.r, dstSz)
+    ELSIF dstSz > srcSz THEN MaskSetReg(x.r, srcSz)
+    END;
+    x.type := dst
+  END
+END ValSetFromInt;
+
+(** BITS: integer bit pattern to set type (cast, not conversion). *)
+PROCEDURE Bits*(VAR x: Item; dst: ST.Type);
+VAR y: Item;
+BEGIN
+  y.mode := x.mode; y.type := x.type; y.a := x.a; y.b := x.b;
+  y.r := x.r; y.rdo := x.rdo; y.extImp := x.extImp;
+  ValSetFromInt(x, y, dst)
+END Bits;
+
+PROCEDURE PromoteRealToLong*(VAR x: Item);
+BEGIN
+  IF (x.type # NIL) & (x.type.form = ST.Real) THEN
+    Load(x);
+    G.FcvtSD(x.r, x.r);
+    G.FMovDtoX(x.r, x.r);
+    x.type := ST.longRealType
+  END
+END PromoteRealToLong;
 
 PROCEDURE LoadAddr(VAR x: Item);
 BEGIN
@@ -236,19 +604,88 @@ BEGIN
     x.mode := Reg
   ELSIF x.mode = ST.Var THEN
     IF x.b > 0 THEN (* local variable *)
-      G.AddImm(RH, FP, M.SHORT(x.a))
+      AddrOffset(RH, FP, M.SHORT(x.a))
     ELSE (* global variable *)
-      G.LoadDataPage(RH);
-      G.AddImm(RH, RH, M.SHORT(x.a))
+      DataPageAdrp(RH, x.extImp);
+      AddrOffset(RH, RH, M.SHORT(x.a))
     END;
     x.r := AllocR()
   ELSIF x.mode = ST.VarPar THEN (* already a pointer in stack frame *)
-    G.LdrImm(RH, FP, M.SHORT(x.a), 8);
+    LoadAt(RH, FP, M.SHORT(x.a), 8);
     x.r := AllocR()
+  ELSIF x.mode = RegI THEN
+    (* Indexed array element: the exact byte address is already in x.r
+       (computed by Index/Field).  Just downgrade RegI to Reg. *)
   ELSE S.Mark(E.badVarPar)
   END;
   x.mode := Reg
 END LoadAddr;
+
+PROCEDURE PreserveAddr*(VAR x: Item);
+VAR r: INTEGER;
+BEGIN
+  IF x.mode = RegI THEN
+    r := AllocR();
+    G.Mov(r, x.r);
+    x.r := r
+  END
+END PreserveAddr;
+
+(** Load the address of T's TypeDesc block in __DATA (own or imported). *)
+PROCEDURE TypeDescAddr(reg: INTEGER; T: ST.Type);
+BEGIN
+  IF T.descModule < 0 THEN
+    G.LoadDataPage(reg);
+    AddrOffset(reg, reg, T.descOffset)
+  ELSE
+    G.LoadExtDataPage(reg, T.descModule);
+    AddrOffset(reg, reg, T.descOffset)
+  END
+END TypeDescAddr;
+
+(** reg := address of the record body for designator x (fields start here). *)
+PROCEDURE LoadBodyAddr(VAR x: Item; VAR reg: INTEGER);
+BEGIN
+  IF x.mode = ST.Pointer THEN
+    Load(x); reg := x.r
+  ELSIF x.mode = ST.Var THEN
+    IF (x.type # NIL) & (x.type.form = ST.Pointer) THEN
+      IF x.b > 0 THEN
+        LoadAt(reg, FP, M.SHORT(x.a), 8)
+      ELSE
+        DataPageAdrp(reg, x.extImp);
+        LoadAt(reg, reg, M.SHORT(x.a), 8)
+      END
+    ELSIF x.b > 0 THEN AddrOffset(reg, FP, M.SHORT(x.a))
+    ELSE
+      DataPageAdrp(reg, x.extImp);
+      AddrOffset(reg, reg, M.SHORT(x.a))
+    END
+  ELSIF x.mode = ST.VarPar THEN
+    LoadAt(reg, FP, M.SHORT(x.a), 8);
+    IF (x.type # NIL) & (x.type.form = ST.Pointer) THEN
+      LoadAt(reg, reg, 0, 8)
+    END
+  ELSIF x.mode = RegI THEN
+    reg := x.r
+  ELSE
+    S.Mark(E.incompatible); G.MovImm(reg, 0)
+  END
+END LoadBodyAddr;
+
+(** SYSTEM.ADR(designator): take the address of a variable/array element.
+    Works uniformly for scalars, fixed and open arrays, and both for
+    `arr` and `arr[0]`: open arrays carry their data pointer in the
+    VarPar slot, so `arr` (mode VarPar) loads the pointer directly,
+    while `arr[0]` (mode RegI/Var) has already resolved to the same
+    address.  Result type is SYSTEM.ADRINT (platform-sized signed
+    integer; identical to LONGINT in form on 64-bit targets). *)
+PROCEDURE AddrOf*(VAR x: Item);
+BEGIN
+  LoadAddr(x);
+  x.type := ST.adrIntType;
+  x.rdo := FALSE
+END AddrOf;
 
 PROCEDURE LoadCond(VAR x: Item);
 BEGIN
@@ -273,7 +710,7 @@ END LoadCond;
 (** Ordinal number. x := ORD(x) *)
 PROCEDURE Ord*(VAR x: Item);
 BEGIN
-  IF x.mode IN {ST.Var, ST.VarPar, ST.Const, Reg} THEN Load(x)
+  IF x.mode IN {ST.Var, ST.VarPar, ST.Const, Reg, RegI} THEN Load(x)
   ELSE S.Mark(E.incompatible)
   END
 END Ord;
@@ -347,14 +784,48 @@ BEGIN
   x.type := ST.intType
 END Floor;
 
+(** FLOOR: LONGREAL → INTEGER. *)
+PROCEDURE FloorD*(VAR x: Item);
+BEGIN
+  Load(x);
+  G.FcvtmsWfromD(x.r, x.r);
+  x.type := ST.intType
+END FloorD;
+
+(** ENTIER: REAL → LONGINT. *)
+PROCEDURE EntierR*(VAR x: Item);
+BEGIN
+  Load(x);
+  G.Fcvtms(x.r, x.r);
+  G.Sxtw(x.r, x.r);
+  x.type := ST.longIntType
+END EntierR;
+
+(** ENTIER: LONGREAL → LONGINT. *)
+PROCEDURE Entier*(VAR x: Item);
+BEGIN
+  Load(x);
+  G.FcvtmsD(x.r, x.r);
+  x.type := ST.longIntType
+END Entier;
+
+PROCEDURE MaskSetBits*(VAR x: Item);
+BEGIN
+  IF x.mode # ST.Const THEN
+    Load(x);
+    MaskSetReg(x.r, x.type.size)
+  END
+END MaskSetBits;
+
 (** SHORT: type narrowing. Result type is set by caller. *)
 PROCEDURE Short*(VAR x: Item);
 BEGIN
-  (* Constant values are just truncated *)
   IF x.mode # ST.Const THEN
     Load(x);
-    IF x.type.size = 8 THEN G.Sxtw(x.r, x.r)
+    IF ST.IsSetForm(x.type.form) THEN
+    ELSIF x.type.size = 8 THEN G.Sxtw(x.r, x.r)
     ELSIF x.type.size = 4 THEN G.Sxth(x.r, x.r)
+    ELSIF x.type.size = 2 THEN G.Sxtb(x.r, x.r)
     END
   END
 END Short;
@@ -364,19 +835,158 @@ PROCEDURE Long*(VAR x: Item);
 BEGIN
   IF x.mode # ST.Const THEN
     Load(x);
-    IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
+    IF ST.IsSetForm(x.type.form) THEN
+    ELSIF x.type.size = 1 THEN G.Sxtb(x.r, x.r)
+    ELSIF x.type.size = 2 THEN G.Sxth(x.r, x.r)
     ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r)
     END
   END
 END Long;
 
-(** FLT: INTEGER → REAL. *)
+(** FLT: integer types → REAL. *)
 PROCEDURE Flt*(VAR x: Item);
 BEGIN
   Load(x);
-  G.Scvtf(x.r, x.r);
+  IF x.type.size = 8 THEN
+    G.ScvtfD(x.r, x.r);
+    G.FcvtDS(x.r, x.r);
+    G.FMovStoW(x.r, x.r)
+  ELSE
+    G.Scvtf(x.r, x.r);
+    G.FMovStoW(x.r, x.r)
+  END;
   x.type := ST.realType
 END Flt;
+
+(** LONGFLT: integer types → LONGREAL. *)
+PROCEDURE LongFlt*(VAR x: Item);
+BEGIN
+  Load(x);
+  IF x.type.size = 8 THEN G.ScvtfD(x.r, x.r)
+  ELSE G.Scvtf(x.r, x.r); G.FcvtSD(x.r, x.r)
+  END;
+  G.FMovDtoX(x.r, x.r);
+  x.type := ST.longRealType
+END LongFlt;
+
+PROCEDURE TruncIntConst(v: LONGINT; src, dst: ST.Type): LONGINT;
+VAR r: LONGINT;
+BEGIN
+  IF dst.form = ST.Byte THEN r := v MOD 100H
+  ELSIF dst.form = ST.TinyInt THEN
+    r := v MOD 100H;
+    IF r >= 80H THEN r := r - 100H END
+  ELSIF dst.form = ST.ShortInt THEN r := M.LONG(M.SHORT(v))
+  ELSIF (dst.form = ST.Int) & (src.size = 8) THEN r := M.LONG(M.SHORT(v))
+  ELSE r := v
+  END
+RETURN r END TruncIntConst;
+
+(** SYSTEM.VAL: integer narrowing/widening; other pairs via ValCompatible. *)
+PROCEDURE Val*(VAR x: Item; y: Item; dst: ST.Type);
+VAR srcSz, dstSz, mask: INTEGER;
+BEGIN
+  IF ST.IsIntegerForm(dst.form) & ST.IsIntegerForm(y.type.form) THEN
+    IF y.mode = ST.Const THEN
+      MakeConstItem(x, dst, TruncIntConst(y.a, y.type, dst))
+    ELSE
+      x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+      x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+      Load(x);
+      srcSz := y.type.size; dstSz := dst.size;
+      IF dstSz < srcSz THEN
+        IF srcSz = 8 THEN G.Sxtw(x.r, x.r); srcSz := 4 END;
+        IF (srcSz = 4) & (dstSz <= 2) THEN G.Sxth(x.r, x.r); srcSz := 2 END;
+        IF (srcSz = 2) & (dstSz = 1) THEN G.Sxtb(x.r, x.r); srcSz := 1 END;
+        IF dst.form = ST.Byte THEN
+          mask := AllocR(); G.MovImm(mask, 0FFH); G.And(x.r, x.r, mask); DEC(RH)
+        END
+      ELSIF dstSz > srcSz THEN
+        IF srcSz = 1 THEN G.Sxtb(x.r, x.r)
+        ELSIF srcSz = 2 THEN G.Sxth(x.r, x.r)
+        ELSIF srcSz = 4 THEN G.Sxtw(x.r, x.r)
+        END
+      ELSIF dst.form = ST.Byte THEN
+        mask := AllocR(); G.MovImm(mask, 0FFH); G.And(x.r, x.r, mask); DEC(RH)
+      END;
+      x.type := dst
+    END
+  ELSIF ST.IsSetForm(dst.form) & ST.IsSetForm(y.type.form) THEN
+    IF y.mode = ST.Const THEN
+      MakeConstItem(x, dst, SetBitsConst(y.a, dst))
+    ELSE
+      x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+      x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+      Load(x);
+      IF dst.size < y.type.size THEN MaskSetReg(x.r, dst.size)
+      ELSIF dst.size > y.type.size THEN MaskSetReg(x.r, y.type.size)
+      END;
+      x.type := dst
+    END
+  ELSIF (dst.form = ST.Real) & ST.IsIntegerForm(y.type.form) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    Flt(x)
+  ELSIF (dst.form = ST.LongReal) & ST.IsIntegerForm(y.type.form) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    LongFlt(x)
+  ELSIF (dst.form = ST.LongReal) & (y.type.form = ST.Real) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    PromoteRealToLong(x)
+  ELSIF (dst.form = ST.Real) & (y.type.form = ST.LongReal) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    Load(x);
+    G.FcvtDS(x.r, x.r);
+    G.FMovStoW(x.r, x.r);
+    x.type := dst
+  ELSIF (dst.form = ST.Int) & (y.type.form = ST.Real) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    Floor(x)
+  ELSIF (dst.form = ST.Int) & (y.type.form = ST.LongReal) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    FloorD(x)
+  ELSIF (dst.form = ST.LongInt) & (y.type.form = ST.Real) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    EntierR(x)
+  ELSIF (dst.form = ST.LongInt) & (y.type.form = ST.LongReal) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    Entier(x)
+  ELSIF ST.IsIntegerForm(dst.form) & (y.type.form = ST.Real) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    Floor(x); x.type := dst
+  ELSIF ST.IsIntegerForm(dst.form) & (y.type.form = ST.LongReal) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    Entier(x);
+    IF dst.form # ST.LongInt THEN Short(x) END;
+    x.type := dst
+  ELSIF (dst.form = ST.Char) & ST.IsIntegerForm(y.type.form) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    Ord(x); x.type := dst
+  ELSIF (dst.form = ST.Int) & (y.type.form = ST.Char) THEN
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    Ord(x)
+  ELSIF ST.IsSetForm(dst.form) & ST.IsIntegerForm(y.type.form) THEN
+    ValSetFromInt(x, y, dst)
+  ELSIF ST.IsIntegerForm(dst.form) & ST.IsSetForm(y.type.form) THEN
+    ValIntFromSet(x, y, dst)
+  ELSE
+    x.mode := y.mode; x.type := y.type; x.a := y.a; x.b := y.b;
+    x.r := y.r; x.rdo := y.rdo; x.extImp := y.extImp;
+    IF y.mode # ST.Const THEN Load(x) END;
+    x.type := dst
+  END
+END Val;
 
 (** Set Operations **)
 
@@ -421,17 +1031,47 @@ BEGIN
   x.type := ST.setType
 END SetRange;
 
+PROCEDURE PromoteSetTo*(VAR x: Item; rank: INTEGER);
+VAR r: INTEGER;
+BEGIN
+  r := ST.SetRank(x.type.form);
+  WHILE r < rank DO
+    Long(x);
+    INC(r);
+    x.type := ST.SetTypeAtRank(r)
+  END
+END PromoteSetTo;
+
+PROCEDURE UnifySetTypes*(VAR x, y: Item);
+VAR r: INTEGER;
+BEGIN
+  r := ST.SetRank(x.type.form);
+  IF ST.SetRank(y.type.form) > r THEN r := ST.SetRank(y.type.form) END;
+  PromoteSetTo(x, r);
+  PromoteSetTo(y, r);
+  x.type := ST.SetTypeAtRank(r)
+END UnifySetTypes;
+
 (** Set union. x := x + y (bitwise OR) *)
 PROCEDURE SetUnion*(VAR x, y: Item);
+VAR s, t: SET;
 BEGIN
-  Load(x); Load(y);
-  G.Orr(x.r, x.r, y.r);
-  DEC(RH)
+  IF (x.mode = ST.Const) & (y.mode = ST.Const) THEN
+    s := SYSTEM.VAL(SET, x.a); t := SYSTEM.VAL(SET, y.a);
+    x.a := ORD(s + t);
+    MaskSetConst(x)
+  ELSE
+    UnifySetTypes(x, y);
+    Load(x); Load(y);
+    G.Orr(x.r, x.r, y.r);
+    DEC(RH)
+  END
 END SetUnion;
 
 (** Set difference. x := x - y (bitwise AND NOT) *)
 PROCEDURE SetDiff*(VAR x, y: Item);
 BEGIN
+  UnifySetTypes(x, y);
   Load(x); Load(y);
   G.Bic(x.r, x.r, y.r);
   DEC(RH)
@@ -440,6 +1080,7 @@ END SetDiff;
 (** Set intersection. x := x * y (bitwise AND) *)
 PROCEDURE SetInter*(VAR x, y: Item);
 BEGIN
+  UnifySetTypes(x, y);
   Load(x); Load(y);
   G.And(x.r, x.r, y.r);
   DEC(RH)
@@ -448,6 +1089,7 @@ END SetInter;
 (** Set symmetric difference. x := x / y (bitwise XOR) *)
 PROCEDURE SetSymDiff*(VAR x, y: Item);
 BEGIN
+  UnifySetTypes(x, y);
   Load(x); Load(y);
   G.Eor(x.r, x.r, y.r);
   DEC(RH)
@@ -482,12 +1124,12 @@ PROCEDURE InclExclVar*(VAR s, x: Item; excl: BOOLEAN);
 VAR addr, size, lev, addrReg, valReg: INTEGER;
 BEGIN
   IF s.rdo THEN S.Mark(E.readOnly)
-  ELSIF (s.mode = ST.VarPar) & ((s.type.form = ST.Set) OR (s.type.form = ST.LongSet)) THEN
+  ELSIF (s.mode = ST.VarPar) & ST.IsSetForm(s.type.form) THEN
     size := s.type.size;
     LoadAddr(s);
     addrReg := s.r;
-    G.LdrImm(RH, addrReg, 0, size);
     valReg := AllocR();
+    LoadAt(valReg, addrReg, 0, size);
     IF x.mode = ST.Const THEN
       G.MovImm(RH, M.LSL64(1, M.SHORT(x.a)));
       IF excl THEN G.Bic(valReg, valReg, RH)
@@ -502,7 +1144,8 @@ BEGIN
       END;
       DEC(RH)
     END;
-    G.StrImm(valReg, addrReg, 0, size);
+    IF ST.IsSetForm(s.type.form) & (size = 1) THEN MaskSetReg(valReg, size) END;
+    StoreAt(valReg, addrReg, 0, size);
     DEC(RH, 2)
   ELSIF s.mode = ST.Var THEN
     addr := M.SHORT(s.a); size := s.type.size; lev := s.b;
@@ -522,10 +1165,10 @@ BEGIN
       DEC(RH)
     END;
     IF lev > 0 THEN (* local variable or value parameter *)
-      G.StrImm(s.r, FP, addr, size)
+      StoreAt(s.r, FP, addr, size)
     ELSE (* module-level variable *)
-      G.LoadDataPage(RH);
-      G.StrImm(s.r, RH, addr, size)
+      DataPageAdrp(RH, s.extImp);
+      StoreAt(s.r, RH, addr, size)
     END;
     DEC(RH)
   ELSE
@@ -542,7 +1185,7 @@ BEGIN
     IF dec THEN a := -M.SHORT(n.a) ELSE a := M.SHORT(n.a) END;
     IF x.mode = RegI THEN
       addrReg := x.r; size := x.type.size;
-      G.LdrImm(RH, addrReg, 0, size);
+      LoadAt(RH, addrReg, 0, size);
       x.r := AllocR();
       x.mode := Reg;
       IF n.mode = ST.Const THEN
@@ -554,7 +1197,7 @@ BEGIN
         END;
         DEC(RH)
       END;
-      G.StrImm(x.r, addrReg, 0, size);
+      StoreAt(x.r, addrReg, 0, size);
       DEC(RH, 2)
     ELSIF x.mode = ST.Var THEN
       addr := M.SHORT(x.a); size := x.type.size;
@@ -569,12 +1212,28 @@ BEGIN
         DEC(RH)
       END;
       IF x.b > 0 THEN (* local variable *)
-        G.StrImm(x.r, FP, addr, size)
+        StoreAt(x.r, FP, addr, size)
       ELSE (* global variable *)
-        G.LoadDataPage(RH);
-        G.StrImm(x.r, RH, addr, size)
+        DataPageAdrp(RH, x.extImp);
+        StoreAt(x.r, RH, addr, size)
       END;
       DEC(RH)
+    ELSIF x.mode = ST.VarPar THEN
+      addrReg := AllocR();
+      LoadAt(addrReg, FP, M.SHORT(x.a), 8);
+      x.r := AllocR();
+      LoadAt(x.r, addrReg, 0, x.type.size);
+      IF n.mode = ST.Const THEN
+        G.AddImm(x.r, x.r, a)
+      ELSE
+        Load(n);
+        IF dec THEN G.Sub(x.r, x.r, n.r)
+        ELSE G.Add(x.r, x.r, n.r)
+        END;
+        DEC(RH)
+      END;
+      StoreAt(x.r, addrReg, 0, x.type.size);
+      DEC(RH, 2)
     ELSE S.Mark(E.badVarPar)
     END
   END
@@ -614,15 +1273,29 @@ BEGIN
     END
   ELSIF y.mode = ST.Const THEN (* x -- Reg or Var *)
     Load(x); (* x -- Reg, y -- Const *)
-    IF op = S.plus THEN
-      G.AddImm(x.r, x.r, M.SHORT(y.a))
-    ELSE (* op = S.minus *)
-      G.AddImm(x.r, x.r, -M.SHORT(y.a))
+    IF (y.a >= -4095) & (y.a <= 4095) THEN
+      IF op = S.plus THEN
+        G.AddImm(x.r, x.r, M.SHORT(y.a))
+      ELSE
+        G.AddImm(x.r, x.r, -M.SHORT(y.a))
+      END
+    ELSE
+      Load(y);
+      IF op = S.plus THEN G.Add(x.r, x.r, y.r)
+      ELSE G.Sub(x.r, x.r, y.r)
+      END;
+      DEC(RH)
     END
   ELSIF x.mode = ST.Const THEN (* y -- Reg or Var *)
     Load(y); (* x -- Const, y -- Reg *)
     IF op = S.minus THEN Neg(y) END;
-    G.AddImm(y.r, y.r, M.SHORT(x.a));
+    IF (x.a >= -4095) & (x.a <= 4095) THEN
+      G.AddImm(y.r, y.r, M.SHORT(x.a))
+    ELSE
+      Load(x);
+      G.Add(y.r, y.r, x.r);
+      DEC(RH)
+    END;
     x := y
   ELSE
     Load(x); Load(y); (* x -- Reg, y -- Reg *)
@@ -644,19 +1317,44 @@ END AddOp;
 
 (** Float negation. x := -x *)
 PROCEDURE FNegVal*(VAR x: Item);
+VAR sign: LONGINT;
 BEGIN
-  Load(x);
-  G.FNeg(x.r, x.r)
+  IF x.mode = ST.Const THEN
+    IF x.type.form = ST.LongReal THEN
+      sign := M.LSL64(SYSTEM.VAL(LONGINT, 1), 63);
+      IF x.a >= 0 THEN x.a := x.a + sign ELSE x.a := x.a - sign END
+    ELSE
+      IF x.a >= 0 THEN x.a := x.a + (-7FFFFFFFH - 1)
+      ELSE x.a := x.a - (-7FFFFFFFH - 1)
+      END
+    END
+  ELSIF x.type.form = ST.LongReal THEN
+    Load(x);
+    G.DNeg(x.r, x.r);
+    G.FMovDtoX(x.r, x.r)
+  ELSE
+    Load(x);
+    G.FNeg(x.r, x.r);
+    G.FMovStoW(x.r, x.r)
+  END
 END FNegVal;
 
 (** Float addition or subtraction. x := x op y *)
 PROCEDURE FAddOp*(op: INTEGER; VAR x, y: Item);
 BEGIN
-  Load(x); Load(y);
-  IF op = S.plus THEN
-    G.FAdd(x.r, x.r, y.r)
+  Load(x);
+  IF (y.mode # Reg) & (x.mode = Reg) & (RH = x.r) THEN INC(RH) END;
+  Load(y);
+  IF x.type.form = ST.LongReal THEN
+    IF op = S.plus THEN G.DAdd(x.r, x.r, y.r)
+    ELSE G.DSub(x.r, x.r, y.r)
+    END;
+    G.FMovDtoX(x.r, x.r)
   ELSE
-    G.FSub(x.r, x.r, y.r)
+    IF op = S.plus THEN G.FAdd(x.r, x.r, y.r)
+    ELSE G.FSub(x.r, x.r, y.r)
+    END;
+    G.FMovStoW(x.r, x.r)
   END;
   DEC(RH)
 END FAddOp;
@@ -664,11 +1362,19 @@ END FAddOp;
 (** Float multiplication or division. x := x op y *)
 PROCEDURE FMulOp*(op: INTEGER; VAR x, y: Item);
 BEGIN
-  Load(x); Load(y);
-  IF op = S.times THEN
-    G.FMul(x.r, x.r, y.r)
+  Load(x);
+  IF (y.mode # Reg) & (x.mode = Reg) & (RH = x.r) THEN INC(RH) END;
+  Load(y);
+  IF x.type.form = ST.LongReal THEN
+    IF op = S.times THEN G.DMul(x.r, x.r, y.r)
+    ELSE G.DDiv(x.r, x.r, y.r)
+    END;
+    G.FMovDtoX(x.r, x.r)
   ELSE
-    G.FDiv(x.r, x.r, y.r)
+    IF op = S.times THEN G.FMul(x.r, x.r, y.r)
+    ELSE G.FDiv(x.r, x.r, y.r)
+    END;
+    G.FMovStoW(x.r, x.r)
   END;
   DEC(RH)
 END FMulOp;
@@ -815,34 +1521,63 @@ BEGIN
 END SetCond;
 
 PROCEDURE IntRel*(op: INTEGER; VAR x, y: Item);
+VAR cmpSz: INTEGER;
 BEGIN
-  IF (y.mode = ST.Const) & (y.a >= 0) & (y.a < 1000H) THEN
+  IF ST.IsSetForm(x.type.form) & ST.IsSetForm(y.type.form) THEN
+    cmpSz := x.type.size;
+    IF y.type.size < cmpSz THEN cmpSz := y.type.size END;
+    IF (y.mode = ST.Const) & (y.a >= 0) & (y.a < 1000H) THEN
+      Load(x);
+      IF x.type.size > cmpSz THEN MaskSetReg(x.r, cmpSz) END;
+      G.CmpImm(x.r, M.SHORT(y.a));
+      DEC(RH)
+    ELSE
+      Load(x);
+      IF x.type.size > cmpSz THEN MaskSetReg(x.r, cmpSz) END;
+      Load(y);
+      IF y.type.size > cmpSz THEN MaskSetReg(y.r, cmpSz) END;
+      G.Cmp(x.r, y.r);
+      DEC(RH, 2)
+    END
+  ELSIF (y.mode = ST.Const) & (y.a >= 0) & (y.a < 1000H) THEN
     Load(x);
-    IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
+    IF x.type.form = ST.Byte THEN
+      IF x.type.size = 1 THEN MaskSetReg(x.r, 1) END
+    ELSIF x.type.size = 1 THEN G.Sxtb(x.r, x.r)
+    ELSIF x.type.size = 2 THEN G.Sxth(x.r, x.r)
     ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r)
     END;
     G.CmpImm(x.r, M.SHORT(y.a));
     DEC(RH)
   ELSE
     Load(x);
-    IF x.type.size = 2 THEN G.Sxth(x.r, x.r)
+    IF x.type.form = ST.Byte THEN
+      IF x.type.size = 1 THEN MaskSetReg(x.r, 1) END
+    ELSIF x.type.size = 1 THEN G.Sxtb(x.r, x.r)
+    ELSIF x.type.size = 2 THEN G.Sxth(x.r, x.r)
     ELSIF x.type.size = 4 THEN G.Sxtw(x.r, x.r)
     END;
     Load(y);
-    IF y.type.size = 2 THEN G.Sxth(y.r, y.r)
+    IF y.type.form = ST.Byte THEN
+      IF y.type.size = 1 THEN MaskSetReg(y.r, 1) END
+    ELSIF y.type.size = 1 THEN G.Sxtb(y.r, y.r)
+    ELSIF y.type.size = 2 THEN G.Sxth(y.r, y.r)
     ELSIF y.type.size = 4 THEN G.Sxtw(y.r, y.r)
     END;
     G.Cmp(x.r, y.r);
     DEC(RH, 2)
   END;
-  SetCond(x, RelCond(op))
+  SetCond(x, RelCond(op));
+  FixRH(0)
 END IntRel;
 
 (** Float comparison. x rel y → Bool result *)
 PROCEDURE FRel*(op: INTEGER; VAR x, y: Item);
 BEGIN
   Load(x); Load(y);
-  G.FCmp(x.r, y.r);
+  IF x.type.form = ST.LongReal THEN G.DCmp(x.r, y.r)
+  ELSE G.FCmp(x.r, y.r)
+  END;
   DEC(RH, 2);
   SetCond(x, RelCond(op))
 END FRel;
@@ -852,17 +1587,24 @@ VAR r, base: INTEGER;
 BEGIN
   r := AllocR();
   G.LoadStringAddr(r, M.SHORT(y.a));
-  G.LdrImm(r, r, 0, 2);
+  LoadAt(r, r, 0, 2);
   IF x.mode = ST.Var THEN
-    IF x.b > 0 THEN G.StrImm(r, FP, M.SHORT(x.a), 2); DEC(RH)
+    IF x.b > 0 THEN StoreAt(r, FP, M.SHORT(x.a), 2); DEC(RH)
     ELSE
       (* Adrp writes to register index RH without AllocR; INC so RH matches two live regs (r, base). *)
       base := RH;
-      G.LoadDataPage(base);
-      G.StrImm(r, base, M.SHORT(x.a), 2);
+      DataPageAdrp(base, x.extImp);
+      StoreAt(r, base, M.SHORT(x.a), 2);
       INC(RH);
       DEC(RH, 2)
     END
+  ELSIF x.mode = RegI THEN
+    StoreAt(r, x.r, 0, 2);
+    DEC(RH, 2)
+  ELSIF x.mode = ST.VarPar THEN
+    LoadAt(RH, FP, M.SHORT(x.a), 8);
+    StoreAt(r, RH, 0, 2);
+    DEC(RH)
   ELSE S.Mark(E.incompatible)
   END
 END AssignCharFromString;
@@ -887,8 +1629,8 @@ BEGIN
   LoadAddr(ya); pr := ya.r;
   bl := AllocR(); br := AllocR();
   loop0 := G.Here();
-  G.LdrImm(bl, pl, 0, 2);
-  G.LdrImm(br, pr, 0, 2);
+  LoadAt(bl, pl, 0, 2);
+  LoadAt(br, pr, 0, 2);
   G.Cmp(bl, br);
   G.BCond(NE, 0);
   pNe := G.Here() - 1;
@@ -926,13 +1668,112 @@ BEGIN
   xa.mode := Reg;
   xa.type := ST.boolType;
   xa.r := pl;
-  xa.a := 0; xa.b := 0; xa.rdo := FALSE
+  xa.a := 0; xa.b := 0; xa.rdo := FALSE; xa.extImp := -1
 END CmpStrings;
 
+(** Emits a byte-by-byte copy of `size` bytes from [srcReg] to [dstReg].
+    Uses 8/4/2/1-byte chunks chosen by remaining size, all unrolled.
+    Allocates one scratch register from RH and frees it on exit; caller
+    must ensure both src and dst registers are already live. *)
+PROCEDURE CopyAggregate*(dstReg, srcReg, size: INTEGER);
+VAR i, t, chunk: INTEGER;
+BEGIN
+  t := AllocR();
+  i := 0;
+  WHILE i < size DO
+    IF (size - i >= 8) & (i MOD 8 = 0) THEN chunk := 8
+    ELSIF (size - i >= 4) & (i MOD 4 = 0) THEN chunk := 4
+    ELSIF (size - i >= 2) & (i MOD 2 = 0) THEN chunk := 2
+    ELSE chunk := 1
+    END;
+    LoadAt(t, srcReg, i, chunk);
+    StoreAt(t, dstReg, i, chunk);
+    i := i + chunk
+  END;
+  DEC(RH)
+END CopyAggregate;
+
+(** Emits in-place selection of a record field on Item x.
+    Result is an Item whose effective address is `addressOf(x) + field.address`,
+    with the field's type. Mode-preserving: Var stays Var (offset folded into x.a),
+    RegI stays RegI (offset added to x.r), VarPar is dereferenced to RegI
+    so subsequent operations work on the field of the pointed-to record. *)
+PROCEDURE Field*(VAR x: Item; field: ST.Object);
+VAR off: INTEGER;
+BEGIN
+  off := M.SHORT(field.address);
+  IF x.mode = ST.Var THEN
+    x.a := x.a + off
+  ELSIF x.mode = RegI THEN
+    IF off # 0 THEN G.AddImm(x.r, x.r, off) END
+  ELSIF x.mode = ST.VarPar THEN
+    LoadAt(RH, FP, M.SHORT(x.a), 8);
+    x.r := AllocR();
+    IF off # 0 THEN G.AddImm(x.r, x.r, off) END;
+    x.mode := RegI
+  ELSE
+    S.Mark(E.notRecord)
+  END;
+  x.type := field.type;
+  x.rdo := FALSE
+END Field;
+
+(** NIL literal Item: 0-valued Const of the singleton nilType. *)
+PROCEDURE MakeNilItem*(VAR x: Item);
+BEGIN
+  x.mode := ST.Const;
+  x.type := ST.nilType;
+  x.a := 0;
+  x.b := 0;
+  x.rdo := FALSE;
+  x.extImp := -1
+END MakeNilItem;
+
+(** Pointer dereference: x must be a Pointer designator.  Loads the
+    pointer value into a register, traps with BRK 1 if NIL, then
+    re-tags the Item as RegI of the base record so subsequent .field /
+    [..] / := operations transparently work on the pointed-to record. *)
+PROCEDURE Deref*(VAR x: Item);
+VAR okL: INTEGER;
+BEGIN
+  IF (x.type = NIL) OR (x.type.form # ST.Pointer) OR (x.type.base = NIL) THEN
+    S.Mark(E.notPointer)
+  ELSE
+    Load(x);                    (* x.mode := Reg; x.r := pointer value *)
+    G.CmpImm(x.r, 0);
+    G.BCond(NE, 0); okL := G.Here() - 1;
+    G.Brk(1);
+    G.PatchBCond(okL, G.Here());
+    x.mode := RegI;
+    x.type := x.type.base;
+    x.rdo := FALSE
+  END
+END Deref;
+
+(** Called once per value-Record formal parameter from the procedure
+    prologue.  The caller passed a pointer to the source record in
+    register x_i, which `ProcPrologue` already spilled to FP+ptrSlot.
+    We load that pointer, derive the address of the local copy slot
+    at FP+localOff, and copy `size` bytes — giving the procedure body
+    its private mutable copy with full Oberon-07 value semantics. *)
+PROCEDURE CopyValueRecordParam*(localOff, ptrSlot, size: INTEGER);
+VAR srcR, dstR: INTEGER;
+BEGIN
+  srcR := AllocR();
+  LoadAt(srcR, FP, ptrSlot, 8);
+  dstR := AllocR();
+  AddrOffset(dstR, FP, localOff);
+  CopyAggregate(dstR, srcR, size);
+  DEC(RH, 2)
+END CopyValueRecordParam;
+
 PROCEDURE Assign*(VAR x, y: Item);
-VAR size, q, rt: INTEGER;
+VAR size, q, rt, src, addrReg: INTEGER;
 BEGIN
   IF x.rdo THEN S.Mark(E.readOnly)
+  ELSIF (x.type # NIL) & (x.type.form = ST.LongReal) & (y.type # NIL) & (y.type.form = ST.Real) THEN
+    PromoteRealToLong(y);
+    Assign(x, y)
   ELSIF (x.type.form = ST.Char) & (y.type.form = ST.String)
       & (y.mode = ST.Const) & (y.type.len = 2) THEN
     AssignCharFromString(x, y)
@@ -945,55 +1786,328 @@ BEGIN
       G.LoadStringAddr(rt, M.SHORT(y.a));
       size := 0;
       WHILE size < y.type.size DO
-        G.LdrImm(RH, rt, size, 2);
-        G.StrImm(RH, q, size, 2);
+        LoadAt(RH, rt, size, 2);
+        StoreAt(RH, q, size, 2);
         INC(size, 2)
       END;
       DEC(RH, 2)
     END
-  ELSIF (y.mode = ST.Const) & ~ST.TypesCompatible(x.type, y.type) THEN
+  ELSIF ~ST.AssignCompatible(x.type, y.type, y.mode = ST.Const) THEN
     S.Mark(E.incompatible)
-  ELSIF (y.mode # ST.Const) & ~ST.TypeAssignable(x.type, y.type) THEN
-    S.Mark(E.incompatible)
+  ELSIF x.type.form = ST.Record THEN
+    LoadAddr(y);
+    LoadAddr(x);
+    src := AllocR();
+    G.AddImm(src, y.r, -8);
+    G.AddImm(x.r, x.r, -8);
+    CopyAggregate(x.r, src, x.type.size);
+    DEC(RH, 3)
   ELSIF x.mode = RegI THEN
+    addrReg := AllocR();
+    G.Mov(addrReg, x.r);
     Load(y);
-    IF x.type.form = ST.Real THEN
-      G.FStrImm(y.r, x.r, 0)
+    IF x.type.form = ST.LongReal THEN
+      FDStoreAt(y.r, addrReg, 0)
+    ELSIF x.type.form = ST.Real THEN
+      FStoreAt(y.r, addrReg, 0)
     ELSE
-      G.StrImm(y.r, x.r, 0, x.type.size)
+      StoreAt(y.r, addrReg, 0, x.type.size)
     END;
-    DEC(RH, 2)
+    DEC(RH, 3)
   ELSIF x.mode = ST.Var THEN
     Load(y); (* x -- Var, y -- Reg *)
     IF x.b > 0 THEN (* local variable *)
-      IF x.type.form = ST.Real THEN
-        G.FStrImm(y.r, FP, M.SHORT(x.a))
+      IF x.type.form = ST.LongReal THEN
+        FDStoreAt(y.r, FP, M.SHORT(x.a))
+      ELSIF x.type.form = ST.Real THEN
+        FStoreAt(y.r, FP, M.SHORT(x.a))
       ELSE
-        G.StrImm(y.r, FP, M.SHORT(x.a), x.type.size)
+        StoreAt(y.r, FP, M.SHORT(x.a), x.type.size)
       END
     ELSE (* global variable *)
-      IF x.type.form = ST.Real THEN
-        G.LoadDataPage(RH);
-        G.FStrImm(y.r, RH, M.SHORT(x.a))
+      IF x.type.form = ST.LongReal THEN
+        DataPageAdrp(RH, x.extImp);
+        FDStoreAt(y.r, RH, M.SHORT(x.a))
+      ELSIF x.type.form = ST.Real THEN
+        DataPageAdrp(RH, x.extImp);
+        FStoreAt(y.r, RH, M.SHORT(x.a))
       ELSE
-        G.LoadDataPage(RH);
-        G.StrImm(y.r, RH, M.SHORT(x.a), x.type.size)
+        DataPageAdrp(RH, x.extImp);
+        StoreAt(y.r, RH, M.SHORT(x.a), x.type.size)
       END
     END;
     DEC(RH)
   ELSIF x.mode = ST.VarPar THEN (* VAR parameter assignment *)
     Load(y);
-    G.LdrImm(RH, FP, M.SHORT(x.a), 8); (* load pointer *)
-    IF x.type.form = ST.Real THEN
-      G.FStrImm(y.r, RH, 0)
+    LoadAt(RH, FP, M.SHORT(x.a), 8); (* load pointer *)
+    IF x.type.form = ST.LongReal THEN
+      FDStoreAt(y.r, RH, 0)
+    ELSIF x.type.form = ST.Real THEN
+      FStoreAt(y.r, RH, 0)
     ELSE
-      G.StrImm(y.r, RH, 0, x.type.size)
+      StoreAt(y.r, RH, 0, x.type.size)
     END;
     DEC(RH)
   ELSE
     S.Mark(E.assignConst)
   END
 END Assign;
+
+(** NEW(x): allocate x.type.base.size bytes via Heap.Allocate, write
+    the type tag at offset 0, and assign the body pointer to x.
+    Layout:    [tag : 8B] [field0] [field1] ... [fieldN]
+                          ^---- pointer value points here, so field
+                                offsets match stack/global records. *)
+PROCEDURE NewVar*(VAR x: Item);
+VAR allocSize, importIdx, savedRH, resReg, i, okL: INTEGER;
+  recType: ST.Type;
+  y: Item;
+BEGIN
+  IF (x.type = NIL) OR (x.type.form # ST.Pointer) OR (x.type.base = NIL) THEN
+    S.Mark(E.notPointer)
+  ELSE
+    recType := x.type.base;
+    allocSize := recType.size;
+    savedRH := RH;
+    IF RH > 0 THEN
+      G.AddImm(SP, SP, -(((RH + 1) DIV 2) * 16));
+      FOR i := 0 TO RH - 1 DO StoreAt(i, SP, i * 8, 8) END
+    END;
+    RH := 0;
+    G.MovImm(0, allocSize);
+    importIdx := G.AddImport('Heap');
+    G.CallExt(importIdx, 'Allocate');
+    G.CmpImm(0, 0);
+    G.BCond(NE, 0); okL := G.Here() - 1;
+    G.Brk(1);
+    G.PatchBCond(okL, G.Here());
+    (* Write the type-tag at offset 0 of the allocated block: address of
+       the record's TypeDesc when known locally, NIL otherwise. *)
+    IF (recType.form = ST.Record) & (recType.descOffset >= 0) THEN
+      TypeDescAddr(1, recType)
+    ELSE
+      G.MovImm(1, 0)
+    END;
+    StoreAt(1, 0, 0, 8);
+    G.AddImm(0, 0, 8);          (* x0 += 8: skip type tag *)
+    resReg := 0;
+    IF savedRH > 0 THEN
+      resReg := savedRH;
+      G.Mov(resReg, 0)
+    END;
+    IF savedRH > 0 THEN
+      FOR i := 0 TO savedRH - 1 DO LoadAt(i, SP, i * 8, 8) END;
+      G.AddImm(SP, SP, ((savedRH + 1) DIV 2) * 16)
+    END;
+    RH := savedRH;
+    y.mode := Reg; y.type := x.type; y.a := 0; y.b := 0; y.rdo := FALSE;
+    y.extImp := -1;
+    y.r := AllocR();
+    IF y.r # resReg THEN G.Mov(y.r, resReg) END;
+    Assign(x, y)
+  END
+END NewVar;
+
+(** Initialise the in-data TypeDesc for a single record-type T.
+    Layout in __DATA: T.extLevel + 1 contiguous 8-byte slots starting at
+    T.descOffset, where slot[i] holds the address of T's ancestor at
+    extension level i (slot[T.extLevel] holds the address of T itself).
+    Ancestors that live in another module (descOffset < 0) get NIL — IS
+    tests against those will simply return FALSE.  Caller must run with
+    RH = 0 (during the module-init prologue). *)
+PROCEDURE EmitRecordTypeDescInit*(T: ST.Type);
+VAR i, dataReg, ancReg: INTEGER;
+  anc: ST.Type;
+BEGIN
+  IF (T # NIL) & (T.form = ST.Record) & (T.descOffset >= 0) THEN
+    dataReg := AllocR();
+    G.LoadDataPage(dataReg);
+    ancReg := AllocR();
+    FOR i := 0 TO T.extLevel DO
+      anc := ST.AncestorAt(T, i);
+      IF (anc # NIL) & (anc.descOffset >= 0) THEN
+        TypeDescAddr(ancReg, anc)
+      ELSE
+        G.MovImm(ancReg, 0)
+      END;
+      StoreAt(ancReg, dataReg, T.descOffset + i * 8, 8)
+    END;
+    DEC(RH, 2)
+  END
+END EmitRecordTypeDescInit;
+
+(** Wirth-style runtime type test `e IS T`.
+    e (Pointer) holds the address of a record body; the type-tag (a
+    pointer to TypeDesc(actualType)) lives 8 bytes before that body.
+    The test loads this tag, indexes into TypeDesc(actualType) at slot
+    extLevel(T), and compares the result to &TypeDesc(T): they are
+    equal iff actualType extends T.
+
+    `T` is the target Record type (caller has already validated that
+    `T` extends `x.type.base`).  When T's descriptor lives in another
+    module (descOffset < 0) we can't compare against it from here, so
+    the test reduces to a constant FALSE — a documented degraded mode
+    until cross-module RTTI is wired through the linker. *)
+PROCEDURE IsTest*(VAR x: Item; T: ST.Type);
+VAR bodyReg, tagReg, cmpReg, targReg: INTEGER;
+BEGIN
+  IF (x.type # NIL) & ((x.type.form = ST.Pointer) OR (x.type.form = ST.Record))
+      & (T # NIL) & (T.form = ST.Record) & (T.descOffset >= 0) THEN
+    bodyReg := AllocR();
+    LoadBodyAddr(x, bodyReg);
+    tagReg := AllocR();
+    cmpReg := AllocR();
+    targReg := AllocR();
+    G.AddImm(tagReg, bodyReg, -8);
+    LoadAt(tagReg, tagReg, 0, 8);
+    LoadAt(cmpReg, tagReg, T.extLevel * 8, 8);
+    TypeDescAddr(targReg, T);
+    G.Cmp(cmpReg, targReg);
+    DEC(RH, 4);
+    SetCond(x, EQ);
+    x.type := ST.boolType
+  ELSE
+    x.mode := ST.Const; x.a := 0; x.type := ST.boolType
+  END
+END IsTest;
+
+(** Type-guard `p(T)` for Pointer p.  Emits the same tag-walk + compare
+    as IsTest, but on mismatch the program traps (BRK 1) rather than
+    yielding FALSE; after the guard, x's static type is narrowed by the
+    caller.  The pointer designator x is preserved unchanged: we work
+    on a temporary copy of x so that subsequent selectors (e.g. `^.fld`)
+    still re-load it from its original location.
+
+    For cross-module T (descOffset < 0) the guard is a no-op (degraded
+    mode, same as IsTest). *)
+PROCEDURE TypeGuard*(VAR x: Item; T: ST.Type);
+VAR bodyReg, tagReg, cmpReg, targReg, okL: INTEGER;
+BEGIN
+  IF (T # NIL) & (T.form = ST.Record) & (T.descOffset >= 0)
+      & (x.type # NIL) & ((x.type.form = ST.Pointer) OR (x.type.form = ST.Record)) THEN
+    bodyReg := AllocR();
+    LoadBodyAddr(x, bodyReg);
+    tagReg := AllocR();
+    cmpReg := AllocR();
+    targReg := AllocR();
+    G.AddImm(tagReg, bodyReg, -8);
+    LoadAt(tagReg, tagReg, 0, 8);
+    LoadAt(cmpReg, tagReg, T.extLevel * 8, 8);
+    TypeDescAddr(targReg, T);
+    G.Cmp(cmpReg, targReg);
+    G.BCond(EQ, 0);
+    okL := G.Here() - 1;
+    G.Brk(1);
+    G.PatchBCond(okL, G.Here());
+    DEC(RH, 4)
+  END
+END TypeGuard;
+
+(** Dubova 5.14: verify actual record's dynamic type extends formal. *)
+PROCEDURE EmitRecordParamTypeCheck*(VAR x: Item; formalType: ST.Type);
+VAR bodyReg, tagReg, cmpReg, targReg, okL: INTEGER;
+BEGIN
+  IF (formalType # NIL) & (formalType.form = ST.Record)
+      & (formalType.descOffset >= 0) THEN
+    bodyReg := AllocR();
+    LoadBodyAddr(x, bodyReg);
+    tagReg := AllocR();
+    cmpReg := AllocR();
+    targReg := AllocR();
+    G.AddImm(tagReg, bodyReg, -8);
+    LoadAt(tagReg, tagReg, 0, 8);
+    LoadAt(cmpReg, tagReg, formalType.extLevel * 8, 8);
+    TypeDescAddr(targReg, formalType);
+    G.Cmp(cmpReg, targReg);
+    G.BCond(EQ, 0);
+    okL := G.Here() - 1;
+    G.Brk(1);
+    G.PatchBCond(okL, G.Here());
+    DEC(RH, 4)
+  END
+END EmitRecordParamTypeCheck;
+
+(** Write the type tag word at [bodyAddr-8] for a record variable. *)
+PROCEDURE EmitRecordBodyTag*(bodyOff, lev, extImp: INTEGER; T: ST.Type);
+VAR tagReg, addrReg, tagOff: INTEGER;
+BEGIN
+  IF (T # NIL) & (T.form = ST.Record) & (T.descOffset >= 0) THEN
+    tagReg := AllocR();
+    TypeDescAddr(tagReg, T);
+    tagOff := bodyOff - 8;
+    IF tagOff < 0 THEN
+      addrReg := AllocR();
+      IF lev > 0 THEN AddrOffset(addrReg, FP, bodyOff)
+      ELSE
+        DataPageAdrp(addrReg, extImp);
+        G.AddImm(addrReg, addrReg, bodyOff)
+      END;
+      G.AddImm(addrReg, addrReg, -8);
+      StoreAt(tagReg, addrReg, 0, 8);
+      DEC(RH, 2)
+    ELSIF lev > 0 THEN
+      StoreAt(tagReg, FP, tagOff, 8);
+      DEC(RH)
+    ELSE
+      DataPageAdrp(RH, extImp);
+      StoreAt(tagReg, RH, tagOff, 8);
+      DEC(RH)
+    END
+  END
+END EmitRecordBodyTag;
+
+PROCEDURE EmitRecordVarTags*(scope: ST.Object; local: BOOLEAN);
+VAR p: ST.Object;
+  extImp: INTEGER;
+BEGIN
+  p := scope.next;
+  WHILE p # ST.dummy DO
+    IF (p.class = ST.Var) & (p.type # NIL) & (p.type.form = ST.Record) THEN
+      IF local & (p.lev > 0) THEN
+        EmitRecordBodyTag(M.SHORT(p.address), p.lev, -1, p.type)
+      ELSIF ~local & (p.lev = 0) THEN
+        extImp := -1;
+        IF p.external THEN extImp := p.importIdx END;
+        EmitRecordBodyTag(M.SHORT(p.address), 0, extImp, p.type)
+      END
+    END;
+    p := p.next
+  END
+END EmitRecordVarTags;
+
+PROCEDURE ZeroLocals*(fromOff, toOff: INTEGER);
+VAR off: INTEGER;
+BEGIN
+  G.MovImm(RH, 0);
+  off := fromOff;
+  WHILE off # toOff DO
+    StoreAt(RH, FP, off, 8);
+    off := off + 8
+  END;
+  RH := 0
+END ZeroLocals;
+
+PROCEDURE EmitNilGlobals*(scope: ST.Object);
+VAR p: ST.Object;
+  valReg, addrReg, extImp: INTEGER;
+BEGIN
+  valReg := RH;
+  G.MovImm(valReg, 0);
+  INC(RH);
+  p := scope.next;
+  WHILE p # ST.dummy DO
+    IF (p.class = ST.Var) & (p.lev = 0) & (p.type # NIL)
+        & (p.type.form IN {ST.Pointer, ST.Proc}) THEN
+      extImp := -1;
+      IF p.external THEN extImp := p.importIdx END;
+      addrReg := RH; INC(RH);
+      DataPageAdrp(addrReg, extImp);
+      StoreAt(valReg, addrReg, M.SHORT(p.address), 8)
+    END;
+    p := p.next
+  END;
+  RH := 0
+END EmitNilGlobals;
 
 (** Bounds check for an array index. For closed arrays len > 0 and the
     compare is against the constant. For open arrays len = 0 and the actual
@@ -1010,7 +2124,7 @@ BEGIN
     END
   ELSE
     IF idxReg = RH THEN lenReg := RH + 1 ELSE lenReg := RH END;
-    G.LdrImm(lenReg, FP, lenAddr, 8);
+    LoadAt(lenReg, FP, lenAddr, 8);
     G.Cmp(idxReg, lenReg)
   END;
   G.BCond(LO, 0);
@@ -1027,10 +2141,10 @@ END CheckIndexBounds;
 PROCEDURE EmitDynStride(lenBaseAddr, numLens, elemSize: INTEGER);
 VAR k: INTEGER;
 BEGIN
-  G.LdrImm(RH, FP, lenBaseAddr + 8, 8);
+  LoadAt(RH, FP, lenBaseAddr + 8, 8);
   k := 2;
   WHILE k <= numLens DO
-    G.LdrImm(RH + 1, FP, lenBaseAddr + k * 8, 8);
+    LoadAt(RH + 1, FP, lenBaseAddr + k * 8, 8);
     G.Mul(RH, RH, RH + 1);
     INC(k)
   END;
@@ -1039,6 +2153,37 @@ BEGIN
     G.Mul(RH, RH, RH + 1)
   END
 END EmitDynStride;
+
+(** Index into a string CONST designator. Result is CHAR; read-only. *)
+PROCEDURE StringIndex*(VAR x, y: Item);
+VAR idx, addrReg: INTEGER;
+  pe: ST.StringEntry;
+BEGIN
+  IF (x.type = NIL) OR (x.type.form # ST.String) THEN S.Mark(E.notArray)
+  ELSIF x.mode # ST.Const THEN S.Mark(E.incompatible)
+  ELSE
+    IF y.mode = ST.Const THEN
+      idx := M.SHORT(y.a);
+      IF (idx < 0) OR (idx >= x.type.len) THEN S.Mark(E.indexOutOfBounds) END;
+      pe := ST.PoolEntry(M.SHORT(x.a));
+      IF pe # NIL THEN
+        MakeConstItem(x, ST.charType, ORD(pe.bytes[idx]))
+      END
+    ELSE
+      Load(y);
+      CheckIndexBounds(y.r, x.type.len, 0);
+      addrReg := AllocR();
+      G.LoadStringAddr(addrReg, M.SHORT(x.a));
+      G.AddLsl(x.r, addrReg, y.r, 1);
+      LoadAt(x.r, x.r, 0, 2);
+      x.mode := Reg;
+      x.rdo := TRUE;
+      x.type := ST.charType;
+      DEC(RH)
+    END;
+    IF x.mode = ST.Const THEN x.rdo := TRUE END
+  END
+END StringIndex;
 
 (** Array indexing. x := x[y].
     x is an array variable, y is the index expression.
@@ -1096,10 +2241,10 @@ BEGIN
       Load(y);
       CheckIndexBounds(y.r, x.type.len, x.b);
       IF x.b > 0 THEN (* local array *)
-        G.AddImm(RH, FP, M.SHORT(x.a))
+        AddrOffset(RH, FP, M.SHORT(x.a))
       ELSE (* global array *)
-        G.LoadDataPage(RH);
-        G.AddImm(RH, RH, M.SHORT(x.a))
+        DataPageAdrp(RH, x.extImp);
+        AddrOffset(RH, RH, M.SHORT(x.a))
       END;
       shift := Log2(elemSize);
       IF shift >= 0 THEN
@@ -1127,7 +2272,7 @@ BEGIN
       END;
       DEC(RH)
     ELSIF x.mode = ST.VarPar THEN (* VAR parameter: load pointer, then index *)
-      G.LdrImm(RH, FP, M.SHORT(x.a), 8); (* load array base address *)
+      LoadAt(RH, FP, M.SHORT(x.a), 8); (* load array base address *)
       x.r := AllocR();
       IF y.mode = ST.Const THEN
         IF x.type.openRank > 0 THEN
@@ -1194,10 +2339,17 @@ BEGIN
     G.BCond(AL, M.SHORT(x.a));
     x.a := G.Here() - 1
   ELSE
-    FixLink(x.b);
-    x.b := 0;
+    (* Emit the negated-cond branch first so the true-list (x.b) lands
+       AFTER it (i.e., at the THEN block's first real instruction).
+       Patching x.b before the BCond would route every short-circuit
+       OR-true straight back into the conditional jump and cause it to
+       reuse the latest CMP's flags -- a subtle bug that only fires
+       when the OR fell through with NZCV that happens to satisfy the
+       negated RHS condition. *)
     G.BCond(Negated(x.r), M.SHORT(x.a));
-    x.a := G.Here() - 1
+    x.a := G.Here() - 1;
+    FixLink(x.b);
+    x.b := 0
   END
 END CFJump;
 
@@ -1263,8 +2415,29 @@ END And1;
 PROCEDURE And2*(VAR x, y: Item);
 BEGIN
   LoadCond(y);
-  x.a := MergeLists(M.SHORT(y.a), M.SHORT(x.a));
-  x.b := y.b; x.r := y.r
+  IF y.r = NV THEN
+    x.r := NV; FixLink(M.SHORT(x.b)); x.b := 0
+  ELSIF x.r = NV THEN
+    FixLink(M.SHORT(y.a)); FixLink(y.b)
+  ELSIF x.r = AL THEN
+    IF y.r = NV THEN x.r := NV
+    ELSE
+      x.a := MergeLists(M.SHORT(y.a), M.SHORT(x.a));
+      x.b := MergeLists(y.b, x.b); x.r := y.r
+    END
+  ELSE
+    IF y.r = NV THEN
+      x.r := NV
+    ELSIF y.r = AL THEN
+      x.a := MergeLists(M.SHORT(y.a), M.SHORT(x.a));
+      x.b := MergeLists(y.b, x.b)
+    ELSE
+      G.BCond(Negated(y.r), M.SHORT(x.a));
+      x.a := G.Here() - 1;
+      x.b := MergeLists(y.b, x.b);
+      x.r := y.r
+    END
+  END
 END And2;
 
 (** x := x OR *)
@@ -1278,10 +2451,12 @@ BEGIN
     FixLink(M.SHORT(x.a));
     x.a := 0
   ELSE
+    (* If LHS is true, branch to Or2's exit (x.b patched there) and skip
+       RHS.  Clear the false-list head in x.a first (same as And1/CFJump). *)
+    G.BCond(x.r, 0);
+    x.b := G.Here() - 1;
     FixLink(M.SHORT(x.a));
-    x.a := 0;
-    G.BCond(x.r, x.b);
-    x.b := G.Here() - 1
+    x.a := 0
   END
 END Or1;
 
@@ -1289,22 +2464,62 @@ END Or1;
 PROCEDURE Or2*(VAR x, y: Item);
 BEGIN
   LoadCond(y);
-  x.b := MergeLists(y.b, x.b);
-  x.a := y.a; x.r := y.r
+  IF x.r = AL THEN
+    FixLink(M.SHORT(y.a)); FixLink(y.b)
+  ELSIF y.r = AL THEN
+    x.r := AL; x.a := 0; x.b := 0
+  ELSIF (x.r = NV) & (y.r = NV) THEN
+    x.r := NV; x.a := 0; x.b := 0
+  ELSIF x.r = NV THEN
+    x.a := y.a; x.b := y.b; x.r := y.r
+  ELSE
+    x.a := MergeLists(M.SHORT(y.a), M.SHORT(x.a));
+    IF x.b = 0 THEN
+      x.b := MergeLists(y.b, x.b);
+      x.r := y.r
+    END
+  END;
+  IF x.b # 0 THEN FixLink(x.b); x.b := 0 END
 END Or2;
 
 (** Procedure Calls *)
 
-(** Value of parameters are stored in registers
-    before a procedure call *)
-PROCEDURE ValueParam*(VAR x: Item);
-BEGIN Load(x)
+(** Place actual parameter x in ARM64 argument register x{slot}.
+    Expression evaluation may leave the value in any register with RH
+    ahead of the next ABI slot; force x{slot} and RH := slot + 1 before
+    the next actual is prepared. *)
+PROCEDURE ValueParam*(VAR x: Item; slot: INTEGER);
+VAR s: INTEGER;
+BEGIN
+  s := slot;
+  IF x.mode = RegI THEN Load(x); x.mode := Reg
+  ELSIF x.type.form = ST.Record THEN LoadAddr(x)
+  ELSIF x.mode # Reg THEN Load(x)
+  END;
+  IF (slot >= 0) & (x.mode = Reg) THEN
+    IF x.r # s THEN
+      IF x.type.form = ST.LongReal THEN
+        IF x.r # s THEN G.Mov(s, x.r) END
+      ELSIF x.type.form = ST.Real THEN G.FMovS(s, x.r)
+      ELSE G.Mov(s, x.r)
+      END
+    END;
+    x.r := s;
+    RH := s + 1
+  END
 END ValueParam;
 
-(** VAR-parameters are stored in registers as pointers
-    before a procedure call *)
-PROCEDURE VarParam*(VAR x: Item);
-BEGIN LoadAddr(x)
+(** VAR-parameters are passed as pointers in x{slot}. *)
+PROCEDURE VarParam*(VAR x: Item; slot: INTEGER);
+VAR s: INTEGER;
+BEGIN
+  s := slot;
+  LoadAddr(x);
+  IF (slot >= 0) & (x.mode = Reg) THEN
+    IF x.r # s THEN G.Mov(s, x.r) END;
+    x.r := s;
+    RH := s + 1
+  END
 END VarParam;
 
 PROCEDURE LoadParamLen*(VAR x: Item; address: INTEGER);
@@ -1313,8 +2528,390 @@ BEGIN
   x.type := ST.intType;
   x.rdo := FALSE;
   x.r := AllocR();
-  G.LdrImm(x.r, FP, address, 8)
+  LoadAt(x.r, FP, address, 8)
 END LoadParamLen;
+
+PROCEDURE LoadAddress(VAR x: Item);
+BEGIN
+  IF x.mode = RegI THEN Load(x); x.mode := Reg
+  ELSIF x.mode # Reg THEN Load(x)
+  END
+END LoadAddress;
+
+(** SYSTEM.BIT(a, n): bit n of the word at byte address a. *)
+PROCEDURE SystemBit*(VAR x: Item; VAR addr, n: Item);
+VAR w: INTEGER;
+BEGIN
+  LoadAddress(addr);
+  Load(n);
+  w := AllocR();
+  LoadAt(w, addr.r, 0, 4);
+  G.Ror(w, w, n.r);
+  G.AndImm1(w, w);
+  x.mode := Reg;
+  x.type := ST.boolType;
+  x.r := w;
+  x.a := 0; x.b := 0; x.rdo := FALSE; x.extImp := -1;
+  DEC(RH, 2)
+END SystemBit;
+
+PROCEDURE MemLoadToReg(reg, addrReg: INTEGER; T: ST.Type);
+BEGIN
+  IF T.form = ST.LongReal THEN
+    FDLoadAt(reg, addrReg, 0);
+    G.FMovDtoX(reg, reg)
+  ELSIF T.form = ST.Real THEN
+    FLoadAt(reg, addrReg, 0);
+    G.FMovStoW(reg, reg)
+  ELSE
+    LoadAt(reg, addrReg, 0, T.size)
+  END
+END MemLoadToReg;
+
+PROCEDURE MemStoreFromReg(reg, addrReg: INTEGER; T: ST.Type);
+BEGIN
+  IF T.form = ST.LongReal THEN
+    G.FMovXtoD(reg, reg);
+    FDStoreAt(reg, addrReg, 0)
+  ELSIF T.form = ST.Real THEN
+    FStoreAt(reg, addrReg, 0)
+  ELSE
+    StoreAt(reg, addrReg, 0, T.size)
+  END
+END MemStoreFromReg;
+
+(** SYSTEM.GET(a, v): load elementary value from mem[a] into VAR v. *)
+PROCEDURE SystemGet*(VAR addr: Item; VAR dest: Item);
+VAR a, d, v: INTEGER;
+BEGIN
+  LoadAddr(dest);
+  d := dest.r;
+  LoadAddress(addr);
+  a := addr.r;
+  v := AllocR();
+  MemLoadToReg(v, a, dest.type);
+  IF dest.type.form = ST.LongReal THEN
+    G.FMovXtoD(v, v);
+    FDStoreAt(v, d, 0)
+  ELSIF dest.type.form = ST.Real THEN
+    FStoreAt(v, d, 0)
+  ELSIF (dest.type.form = ST.Int) & (M.WordSize = 8) THEN
+    G.Sxtw(v, v);
+    StoreAt(v, d, 0, 8)
+  ELSE
+    StoreAt(v, d, 0, dest.type.size)
+  END;
+  DEC(RH, 3)
+END SystemGet;
+
+(** SYSTEM.PUT(a, x): store elementary x at mem[a]. *)
+PROCEDURE SystemPut*(VAR addr: Item; src: Item);
+VAR a: INTEGER; s: Item;
+BEGIN
+  s := src;
+  LoadAddress(addr);
+  a := addr.r;
+  IF s.mode = RegI THEN Load(s); s.mode := Reg
+  ELSIF s.mode # Reg THEN Load(s)
+  END;
+  MemStoreFromReg(s.r, a, s.type);
+  DEC(RH, 1)
+END SystemPut;
+
+PROCEDURE Copy16Fwd(s, d, rLo, rHi, t: INTEGER);
+BEGIN
+  G.Ldp(rLo, rHi, s, 16);
+  G.StrReg(rLo, d, 0, 8);
+  G.AddImm(t, 0, 8);
+  G.StrReg(rHi, d, t, 8);
+  G.AddImm(d, d, 16)
+END Copy16Fwd;
+
+PROCEDURE Copy16Back(s, d, off, rLo, rHi, t: INTEGER);
+BEGIN
+  G.LdrReg(rLo, s, off, 8);
+  G.AddImm(t, off, 8);
+  G.LdrReg(rHi, s, t, 8);
+  G.StrReg(rLo, d, off, 8);
+  G.StrReg(rHi, d, t, 8)
+END Copy16Back;
+
+PROCEDURE CopyTail(s, d, nReg, w: INTEGER);
+VAR skipL: INTEGER;
+BEGIN
+  G.CmpImm(nReg, 8);
+  G.BCond(LO, 0);
+  skipL := G.Here() - 1;
+  LoadAt(w, s, 0, 8);
+  StoreAt(w, d, 0, 8);
+  G.AddImm(s, s, 8);
+  G.AddImm(d, d, 8);
+  G.AddImm(nReg, nReg, 0FFFFFFF8H);
+  G.PatchBCond(skipL, G.Here());
+  G.CmpImm(nReg, 4);
+  G.BCond(LO, 0);
+  skipL := G.Here() - 1;
+  LoadAt(w, s, 0, 4);
+  StoreAt(w, d, 0, 4);
+  G.AddImm(s, s, 4);
+  G.AddImm(d, d, 4);
+  G.AddImm(nReg, nReg, 0FFFFFFFCH);
+  G.PatchBCond(skipL, G.Here());
+  G.CmpImm(nReg, 2);
+  G.BCond(LO, 0);
+  skipL := G.Here() - 1;
+  LoadAt(w, s, 0, 2);
+  StoreAt(w, d, 0, 2);
+  G.AddImm(s, s, 2);
+  G.AddImm(d, d, 2);
+  G.AddImm(nReg, nReg, 0FFFFFFFEH);
+  G.PatchBCond(skipL, G.Here());
+  G.CmpImm(nReg, 1);
+  G.BCond(LO, 0);
+  skipL := G.Here() - 1;
+  LoadAt(w, s, 0, 1);
+  StoreAt(w, d, 0, 1);
+  G.PatchBCond(skipL, G.Here())
+END CopyTail;
+
+(** SYSTEM.COPY(src, dst, n): copy n bytes; overlap-safe; LDP/STP by 16. *)
+PROCEDURE SystemCopy*(VAR src, dst, cnt: Item);
+VAR s, d, n, rem, rLo, rHi, w, t, top, exitL, fwdL1, fwdL2, end, fwdLab, loopExitL, skipBackL: INTEGER;
+BEGIN
+  LoadAddress(src);
+  s := src.r;
+  LoadAddress(dst);
+  d := dst.r;
+  Load(cnt);
+  n := cnt.r;
+  rem := AllocR();
+  G.Mov(rem, n);
+  rLo := AllocR();
+  rHi := AllocR();
+  w := AllocR();
+  t := AllocR();
+  G.CmpImm(n, 0);
+  G.BCond(EQ, 0);
+  exitL := G.Here() - 1;
+  G.Cmp(d, s);
+  G.BCond(LE, 0);
+  fwdL1 := G.Here() - 1;
+  end := AllocR();
+  G.Add(end, s, n);
+  G.Cmp(d, end);
+  G.BCond(GE, 0);
+  fwdL2 := G.Here() - 1;
+  top := G.Here();
+  G.CmpImm(rem, 16);
+  G.BCond(LO, 0);
+  loopExitL := G.Here() - 1;
+  G.AddImm(rem, rem, 0FFFFFFF0H);
+  Copy16Back(s, d, rem, rLo, rHi, t);
+  G.B(0);
+  G.PatchB(G.Here() - 1, top);
+  G.PatchBCond(loopExitL, G.Here());
+  CopyTail(s, d, rem, w);
+  G.B(0);
+  skipBackL := G.Here() - 1;
+  fwdLab := G.Here();
+  G.PatchBCond(fwdL1, fwdLab);
+  G.PatchBCond(fwdL2, fwdLab);
+  top := G.Here();
+  G.CmpImm(rem, 16);
+  G.BCond(LO, 0);
+  loopExitL := G.Here() - 1;
+  Copy16Fwd(s, d, rLo, rHi, t);
+  G.AddImm(rem, rem, 0FFFFFFF0H);
+  G.B(0);
+  G.PatchB(G.Here() - 1, top);
+  G.PatchBCond(loopExitL, G.Here());
+  CopyTail(s, d, rem, w);
+  G.PatchBCond(skipBackL, G.Here());
+  G.PatchBCond(exitL, G.Here());
+  DEC(RH, 7)
+END SystemCopy;
+
+PROCEDURE PrepInt32(VAR x: Item);
+BEGIN
+  Load(x);
+  IF M.WordSize = 8 THEN MaskSetReg(x.r, 4) END
+END PrepInt32;
+
+(** SYSTEM.ADC(m, n): add with carry flag. *)
+PROCEDURE SystemAdc*(VAR x: Item; VAR m, n: Item);
+VAR rd: INTEGER;
+BEGIN
+  PrepInt32(m); PrepInt32(n);
+  rd := AllocR();
+  G.Adcs(rd, m.r, n.r);
+  x.mode := Reg;
+  x.type := ST.intType;
+  x.r := rd;
+  x.a := 0; x.b := 0; x.rdo := FALSE; x.extImp := -1;
+  DEC(RH, 2)
+END SystemAdc;
+
+(** SYSTEM.SBC(m, n): subtract with borrow flag. *)
+PROCEDURE SystemSbc*(VAR x: Item; VAR m, n: Item);
+VAR rd: INTEGER;
+BEGIN
+  PrepInt32(m); PrepInt32(n);
+  rd := AllocR();
+  G.Sbcs(rd, m.r, n.r);
+  x.mode := Reg;
+  x.type := ST.intType;
+  x.r := rd;
+  x.a := 0; x.b := 0; x.rdo := FALSE; x.extImp := -1;
+  DEC(RH, 2)
+END SystemSbc;
+
+(** SYSTEM.UML(m, n): unsigned multiply, low 32 bits. *)
+PROCEDURE SystemUml*(VAR x: Item; VAR m, n: Item);
+VAR rd: INTEGER;
+BEGIN
+  PrepInt32(m); PrepInt32(n);
+  rd := AllocR();
+  G.Umull(rd, m.r, n.r);
+  IF M.WordSize = 8 THEN MaskSetReg(rd, 4) END;
+  x.mode := Reg;
+  x.type := ST.intType;
+  x.r := rd;
+  x.a := 0; x.b := 0; x.rdo := FALSE; x.extImp := -1;
+  DEC(RH, 2)
+END SystemUml;
+
+PROCEDURE StoreIntItem(VAR dest: Item; valReg: INTEGER);
+VAR addr: INTEGER;
+BEGIN
+  IF dest.mode = RegI THEN
+    StoreAt(valReg, dest.r, 0, 4)
+  ELSIF dest.mode = ST.Var THEN
+    IF dest.b > 0 THEN StoreAt(valReg, FP, M.SHORT(dest.a), 4)
+    ELSE
+      DataPageAdrp(RH, dest.extImp);
+      StoreAt(valReg, RH, M.SHORT(dest.a), 4)
+    END
+  ELSIF dest.mode = ST.VarPar THEN
+    LoadAt(addr, FP, M.SHORT(dest.a), 8);
+    StoreAt(valReg, addr, 0, 4);
+    DEC(RH)
+  ELSE S.Mark(E.incompatible)
+  END
+END StoreIntItem;
+
+(** ft := ft * 2^nReg (IEEE single bits in ft). *)
+PROCEDURE RealLdexp(ft, nReg: INTEGER);
+VAR t, ftS, sh, topRH: INTEGER;
+BEGIN
+  topRH := RH;
+  ftS := AllocR();
+  t := AllocR();
+  sh := AllocR();
+  G.MovImm(t, 127);
+  G.Add(t, nReg, t);
+  G.MovImm(sh, 23);
+  G.Lsl(t, t, sh);
+  G.FMovWtoS(ftS, t);
+  G.FMul(ft, ft, ftS);
+  RH := topRH
+END RealLdexp;
+
+(** Normalize IEEE single bits in r to [1, 2); unbiased exponent in nOut. *)
+PROCEDURE RealUnpkBits(r, nOut: INTEGER);
+VAR expW, frac, sign, t, topRH: INTEGER;
+BEGIN
+  topRH := RH;
+  expW := AllocR();
+  t := AllocR();
+  frac := AllocR();
+  sign := AllocR();
+  G.AsrImm(expW, r, 23);
+  G.MovImm(t, ieeeExpMask);
+  G.And(expW, expW, t);
+  G.MovImm(t, 127);
+  G.Sub(nOut, expW, t);
+  G.MovImm(t, ieeeFracMask);
+  G.And(frac, r, t);
+  G.AsrImm(sign, r, 31);
+  G.Lsl(sign, sign, 31);
+  G.MovImm(t, ieeeOne);
+  G.Orr(r, sign, t);
+  G.Orr(r, r, frac);
+  RH := topRH
+END RealUnpkBits;
+
+(** SYSTEM.PACK(x, n): x := x * 2^n. *)
+PROCEDURE SystemPack*(VAR x: Item; VAR n: Item);
+VAR addr, ft: INTEGER;
+BEGIN
+  LoadAddr(x);
+  addr := x.r;
+  ft := AllocR();
+  FLoadAt(ft, addr, 0);
+  Load(n);
+  RealLdexp(ft, n.r);
+  FStoreAt(ft, addr, 0);
+  DEC(RH, 2)
+END SystemPack;
+
+(** SYSTEM.UNPK(x, n): normalize x; n := exponent. *)
+PROCEDURE SystemUnpk*(VAR x: Item; VAR n: Item);
+VAR addr, w, nReg: INTEGER;
+BEGIN
+  LoadAddr(x);
+  addr := x.r;
+  w := AllocR();
+  nReg := AllocR();
+  LoadAt(w, addr, 0, 4);
+  RealUnpkBits(w, nReg);
+  StoreAt(w, addr, 0, 4);
+  StoreIntItem(n, nReg);
+  DEC(RH, 2)
+END SystemUnpk;
+
+(** SYSTEM.DIV(m, n): signed divide, trunc toward zero (SDIV). *)
+PROCEDURE SystemDiv*(VAR x: Item; VAR m, n: Item);
+VAR rd: INTEGER;
+BEGIN
+  PrepInt32(m); PrepInt32(n);
+  rd := AllocR();
+  G.Div(rd, m.r, n.r);
+  x.mode := Reg;
+  x.type := ST.intType;
+  x.r := rd;
+  x.a := 0; x.b := 0; x.rdo := FALSE; x.extImp := -1;
+  DEC(RH, 2)
+END SystemDiv;
+
+(** SYSTEM.MOD(m, n): remainder after truncating divide. *)
+PROCEDURE SystemMod*(VAR x: Item; VAR m, n: Item);
+VAR rd, q, t: INTEGER;
+BEGIN
+  PrepInt32(m); PrepInt32(n);
+  q := AllocR();
+  G.Div(q, m.r, n.r);
+  t := AllocR();
+  G.Mul(t, q, n.r);
+  rd := AllocR();
+  G.Sub(rd, m.r, t);
+  x.mode := Reg;
+  x.type := ST.intType;
+  x.r := rd;
+  x.a := 0; x.b := 0; x.rdo := FALSE; x.extImp := -1;
+  DEC(RH, 3)
+END SystemMod;
+
+(** SYSTEM.COND(n): IF uses B.cond on NZCV from the preceding ADC/SBC/UML. *)
+PROCEDURE SystemCond*(VAR x: Item; VAR n: Item);
+VAR cc: INTEGER;
+BEGIN
+  cc := M.SHORT(SetBitsConst(n.a, n.type)) MOD 16;
+  IF cc < 0 THEN cc := cc + 16 END;
+  x.mode := Cond;
+  x.type := ST.boolType;
+  x.r := cc;
+  x.a := 0; x.b := 0; x.rdo := FALSE; x.extImp := -1
+END SystemCond;
 
 (** Called before Actual Parameters.
     Saves live registers x0..x(RH-1) to stack if any. *)
@@ -1325,7 +2922,7 @@ BEGIN
   IF RH > 0 THEN
     G.AddImm(SP, SP, -(((RH + 1) DIV 2) * 16));
     FOR i := 0 TO RH - 1 DO
-      G.StrImm(i, SP, i * 8, 8)
+      StoreAt(i, SP, i * 8, 8)
     END;
     RH := 0
   END
@@ -1335,491 +2932,25 @@ END PrepCall;
     proc is the target procedure object for direct calls (used for
     forward-reference resolution). *)
 PROCEDURE Call*(VAR x: Item; rx: INTEGER; proc: ST.Object);
-VAR skipNeg, loop1, exitLoop1, loop2, exitLoop2, i: INTEGER;
-  ocChk2, ocB0, ocChk3, ocBA0, ocWrite: INTEGER;
-  osLoop, osFlushEnd, osNoFlush, osBR1, osBR2,
-    osChk2, osChkSurr, os3byte,
-    osNoSurrA, osNoSurrB, osNoSurrC, osNoSurrD, osNoSurrE,
-    osSkipFlushWrite: INTEGER;
-  icChk2, icChk3, ic1done, ic2done: INTEGER;
-  iiLoop, iiSkip, iiNeg, iiDigit, iiApply: INTEGER;
-  iiEnd1, iiEnd2, iiEnd3, iiEnd4, iiEnd5, iiEnd6: INTEGER;
-  ilLoop, ilChk2, ilChk3, ilChk4: INTEGER;
-  ilEnd1, ilEnd2, ilEnd3, ilSurrEnd, ilCrSkip: INTEGER;
+VAR i: INTEGER;
+  pname: ARRAY 64 OF CHAR;
 BEGIN
   ASSERT(proc # NIL);
   (* x.a < 0: inline call ID; x.a >= 0: user procedure word offset *)
-  IF x.a = -1 (* In.Char *) THEN
-    (* On entry: x0 = ptr to CHAR (2 bytes). Read one UTF-8 char from stdin. *)
-    G.Mov(9, 0);                  (* x9 := dest ptr *)
-    G.AddImm(SP, SP, -16);
-    G.MovImm(0, 0); G.Mov(1, SP); G.MovImm(2, 1);
-    G.MovImm(16, 3); G.Svc(0);   (* read(0, SP, 1) *)
-    G.LdrImm(10, SP, 0, 1);      (* x10 := first byte *)
-    G.CmpImm(10, 80H);
-    G.BCond(2 (* HS *), 0); icChk2 := G.Here() - 1;
-    (* 1-byte: ASCII *)
-    G.StrImm(10, 9, 0, 2);
-    G.B(0); ic1done := G.Here() - 1;
-
-    G.PatchBCond(icChk2, G.Here());
-    G.CmpImm(10, 0E0H);
-    G.BCond(2 (* HS *), 0); icChk3 := G.Here() - 1;
-    (* 2-byte UTF-8: 110xxxxx 10xxxxxx *)
-    G.MovImm(0, 0); G.Mov(1, SP); G.MovImm(2, 1);
-    G.MovImm(16, 3); G.Svc(0);
-    G.LdrImm(11, SP, 0, 1);
-    G.MovImm(12, 1FH); G.And(10, 10, 12);
-    G.MovImm(12, 3FH); G.And(11, 11, 12);
-    G.AddLsl(10, 11, 10, 6);
-    G.StrImm(10, 9, 0, 2);
-    G.B(0); ic2done := G.Here() - 1;
-
-    G.PatchBCond(icChk3, G.Here());
-    (* 3-byte UTF-8: 1110xxxx 10xxxxxx 10xxxxxx *)
-    G.MovImm(0, 0); G.Mov(1, SP); G.MovImm(2, 2);
-    G.MovImm(16, 3); G.Svc(0);
-    G.LdrImm(11, SP, 0, 1); G.LdrImm(12, SP, 1, 1);
-    G.MovImm(13, 0FH);  G.And(10, 10, 13);
-    G.MovImm(13, 3FH);
-    G.And(11, 11, 13); G.And(12, 12, 13);
-    G.AddLsl(10, 11, 10, 6);
-    G.AddLsl(10, 12, 10, 6);
-    G.StrImm(10, 9, 0, 2);
-
-    G.PatchB(ic1done, G.Here());
-    G.PatchB(ic2done, G.Here());
-    G.AddImm(SP, SP, 16)
-
-  ELSIF x.a = -2 (* In.Int *) THEN
-    (* On entry: x0 = ptr to INTEGER (8 bytes). Read decimal integer from stdin.
-       Skips leading whitespace; stops at first non-digit after digits. *)
-    G.Mov(9, 0);                  (* x9 := dest ptr *)
-    G.AddImm(SP, SP, -16);
-    G.MovImm(10, 0);              (* x10 := accumulated result *)
-    G.MovImm(11, 0);              (* x11 := sign flag (0=pos, 1=neg) *)
-    (* Skip whitespace loop *)
-    iiLoop := G.Here();
-    G.MovImm(0, 0); G.Mov(1, SP); G.MovImm(2, 1);
-    G.MovImm(16, 3); G.Svc(0);
-    G.CmpImm(0, 0);
-    G.BCond(0 (* EQ *), 0); iiEnd1 := G.Here() - 1;
-    G.LdrImm(12, SP, 0, 1);
-    G.CmpImm(12, 20H); G.BCond(0 (* EQ *), iiLoop - G.Here());
-    G.CmpImm(12, 0AH); G.BCond(0 (* EQ *), iiLoop - G.Here());
-    G.CmpImm(12, 0DH); G.BCond(0 (* EQ *), iiLoop - G.Here());
-    G.CmpImm(12, 09H); G.BCond(0 (* EQ *), iiLoop - G.Here());
-    (* Not whitespace — check for minus *)
-    G.CmpImm(12, 2DH);
-    G.BCond(1 (* NE *), 0); iiNeg := G.Here() - 1;
-    G.MovImm(11, 1);             (* sign := negative *)
-    G.B(0); iiDigit := G.Here() - 1;
-
-    G.PatchBCond(iiNeg, G.Here());
-    (* First non-whitespace char: check if digit *)
-    G.CmpImm(12, 30H);
-    G.BCond(3 (* LO *), 0); iiEnd2 := G.Here() - 1;
-    G.CmpImm(12, 3AH);
-    G.BCond(2 (* HS *), 0); iiEnd3 := G.Here() - 1;
-    G.AddImm(12, 12, -30H);
-    G.MovImm(13, 10);
-    G.Madd(10, 10, 13, 12);
-
-    (* Digit loop: read more digits *)
-    G.PatchB(iiDigit, G.Here());
-    iiDigit := G.Here();
-    G.MovImm(0, 0); G.Mov(1, SP); G.MovImm(2, 1);
-    G.MovImm(16, 3); G.Svc(0);
-    G.CmpImm(0, 0);
-    G.BCond(0 (* EQ *), 0); iiEnd4 := G.Here() - 1;
-    G.LdrImm(12, SP, 0, 1);
-    G.CmpImm(12, 30H);
-    G.BCond(3 (* LO *), 0); iiEnd5 := G.Here() - 1;
-    G.CmpImm(12, 3AH);
-    G.BCond(2 (* HS *), 0); iiEnd6 := G.Here() - 1;
-    G.AddImm(12, 12, -30H);
-    G.MovImm(13, 10);
-    G.Madd(10, 10, 13, 12);
-    G.B(iiDigit - G.Here());
-
-    (* Done: apply sign, store *)
-    i := G.Here();
-    G.PatchBCond(iiEnd1, i); G.PatchBCond(iiEnd2, i);
-    G.PatchBCond(iiEnd3, i); G.PatchBCond(iiEnd4, i);
-    G.PatchBCond(iiEnd5, i); G.PatchBCond(iiEnd6, i);
-    G.CmpImm(11, 0);
-    G.BCond(0 (* EQ *), 0); iiApply := G.Here() - 1;
-    G.Neg(10, 10);
-    G.PatchBCond(iiApply, G.Here());
-    G.StrImm(10, 9, 0, 8);
-    G.AddImm(SP, SP, 16)
-
-  ELSIF x.a = -3 (* In.Line *) THEN
-    (* On entry: x0 = ptr to ARRAY OF CHAR, x1 = LEN (CHAR count).
-       Read UTF-8 line from stdin, decode to UTF-16LE CHARs, NUL-terminate.
-       Stops at newline (consumed but not stored) or when array full. *)
-    G.Mov(3, 0);                  (* x3 := array base ptr *)
-    G.AddImm(4, 1, -1);          (* x4 := maxChars (LEN - 1, for NUL) *)
-    G.MovImm(5, 0);              (* x5 := charIdx *)
-    G.AddImm(SP, SP, -16);
-
-    ilLoop := G.Here();
-    G.Cmp(5, 4);
-    G.BCond(2 (* HS *), 0); ilEnd1 := G.Here() - 1;
-    G.MovImm(0, 0); G.Mov(1, SP); G.MovImm(2, 1);
-    G.MovImm(16, 3); G.Svc(0);
-    G.CmpImm(0, 0);
-    G.BCond(0 (* EQ *), 0); ilEnd2 := G.Here() - 1;
-    G.LdrImm(6, SP, 0, 1);
-    G.CmpImm(6, 0AH);
-    G.BCond(0 (* EQ *), 0); ilEnd3 := G.Here() - 1;
-    G.CmpImm(6, 0DH);
-    G.BCond(0 (* EQ *), ilLoop - G.Here()); (* skip CR, loop back *)
-
-    G.CmpImm(6, 80H);
-    G.BCond(2 (* HS *), 0); ilChk2 := G.Here() - 1;
-    (* 1-byte ASCII *)
-    G.AddLsl(7, 3, 5, 1);
-    G.StrImm(6, 7, 0, 2);
-    G.AddImm(5, 5, 1);
-    G.B(ilLoop - G.Here());
-
-    G.PatchBCond(ilChk2, G.Here());
-    G.CmpImm(6, 0E0H);
-    G.BCond(2 (* HS *), 0); ilChk3 := G.Here() - 1;
-    (* 2-byte UTF-8 *)
-    G.MovImm(0, 0); G.Mov(1, SP); G.MovImm(2, 1);
-    G.MovImm(16, 3); G.Svc(0);
-    G.LdrImm(7, SP, 0, 1);
-    G.MovImm(8, 1FH); G.And(6, 6, 8);
-    G.MovImm(8, 3FH); G.And(7, 7, 8);
-    G.AddLsl(6, 7, 6, 6);
-    G.AddLsl(7, 3, 5, 1);
-    G.StrImm(6, 7, 0, 2);
-    G.AddImm(5, 5, 1);
-    G.B(ilLoop - G.Here());
-
-    G.PatchBCond(ilChk3, G.Here());
-    G.CmpImm(6, 0F0H);
-    G.BCond(2 (* HS *), 0); ilChk4 := G.Here() - 1;
-    (* 3-byte UTF-8 *)
-    G.MovImm(0, 0); G.Mov(1, SP); G.MovImm(2, 2);
-    G.MovImm(16, 3); G.Svc(0);
-    G.LdrImm(7, SP, 0, 1); G.LdrImm(8, SP, 1, 1);
-    G.MovImm(10, 0FH); G.And(6, 6, 10);
-    G.MovImm(10, 3FH); G.And(7, 7, 10); G.And(8, 8, 10);
-    G.AddLsl(6, 7, 6, 6);
-    G.AddLsl(6, 8, 6, 6);
-    G.AddLsl(7, 3, 5, 1);
-    G.StrImm(6, 7, 0, 2);
-    G.AddImm(5, 5, 1);
-    G.B(ilLoop - G.Here());
-
-    G.PatchBCond(ilChk4, G.Here());
-    (* 4-byte UTF-8 -> surrogate pair *)
-    G.MovImm(0, 0); G.Mov(1, SP); G.MovImm(2, 3);
-    G.MovImm(16, 3); G.Svc(0);
-    G.LdrImm(7, SP, 0, 1); G.LdrImm(8, SP, 1, 1); G.LdrImm(10, SP, 2, 1);
-    G.MovImm(11, 7); G.And(6, 6, 11);
-    G.MovImm(11, 3FH);
-    G.And(7, 7, 11); G.And(8, 8, 11); G.And(10, 10, 11);
-    G.AddLsl(6, 7, 6, 6);
-    G.AddLsl(6, 8, 6, 6);
-    G.AddLsl(6, 10, 6, 6);
-    G.MovImm(11, 10000H); G.Sub(6, 6, 11);
-    G.AsrImm(7, 6, 10);
-    G.MovImm(11, 0D800H); G.Add(7, 7, 11);
-    G.AddLsl(8, 3, 5, 1);
-    G.StrImm(7, 8, 0, 2);
-    G.AddImm(5, 5, 1);
-    G.Cmp(5, 4);
-    G.BCond(2 (* HS *), 0); ilSurrEnd := G.Here() - 1;
-    G.MovImm(11, 3FFH); G.And(7, 6, 11);
-    G.MovImm(11, 0DC00H); G.Add(7, 7, 11);
-    G.AddLsl(8, 3, 5, 1);
-    G.StrImm(7, 8, 0, 2);
-    G.AddImm(5, 5, 1);
-    G.B(ilLoop - G.Here());
-
-    (* NUL-terminate *)
-    i := G.Here();
-    G.PatchBCond(ilEnd1, i); G.PatchBCond(ilEnd2, i);
-    G.PatchBCond(ilEnd3, i); G.PatchBCond(ilSurrEnd, i);
-    G.AddLsl(7, 3, 5, 1);
-    G.MovImm(6, 0);
-    G.StrImm(6, 7, 0, 2);
-    G.AddImm(SP, SP, 16)
-
-  ELSIF x.a = -5 (* Out.Char *) THEN
-    (* On entry: w0 = c (CHAR, UCS-2). Encode to UTF-8 (1..3 bytes), then write.
-       Lone surrogates are emitted as a 3-byte CESU-8 sequence. *)
-    G.AddImm(SP, SP, -16);
-    G.MovImm(11, 3FH);          (* mask for low 6 bits *)
-    G.MovImm(13, 80H);          (* continuation marker *)
-    G.CmpImm(0, 80H);
-    G.BCond(2 (* HS *), 0); ocChk2 := G.Here() - 1;
-    (* 1 byte: c < 0x80 *)
-    G.StrImm(0, SP, 0, 1);
-    G.MovImm(2, 1);
-    G.B(0); ocB0 := G.Here() - 1;
-    G.PatchBCond(ocChk2, G.Here());
-    G.CmpImm(0, 800H);
-    G.BCond(2 (* HS *), 0); ocChk3 := G.Here() - 1;
-    (* 2 bytes: 0x80 <= c < 0x800 *)
-    G.AsrImm(14, 0, 6);
-    G.AddImm(14, 14, 0C0H);
-    G.StrImm(14, SP, 0, 1);
-    G.And(15, 0, 11);
-    G.Add(15, 15, 13);
-    G.StrImm(15, SP, 1, 1);
-    G.MovImm(2, 2);
-    G.B(0); ocBA0 := G.Here() - 1;
-    G.PatchBCond(ocChk3, G.Here());
-    (* 3 bytes: c >= 0x800 *)
-    G.AsrImm(14, 0, 12);
-    G.AddImm(14, 14, 0E0H);
-    G.StrImm(14, SP, 0, 1);
-    G.AsrImm(14, 0, 6);
-    G.And(14, 14, 11);
-    G.Add(14, 14, 13);
-    G.StrImm(14, SP, 1, 1);
-    G.And(14, 0, 11);
-    G.Add(14, 14, 13);
-    G.StrImm(14, SP, 2, 1);
-    G.MovImm(2, 3);
-    ocWrite := G.Here();
-    G.PatchB(ocB0, ocWrite);
-    G.PatchB(ocBA0, ocWrite);
-    G.MovImm(0, 1);
-    G.Mov(1, SP);
-    G.MovImm(16, 4);
-    G.Svc(0);
-    G.AddImm(SP, SP, 16)
-  ELSIF x.a = -10 (* Out.String *) THEN
-    (* Inputs: x0 = ptr (UTF-16LE), x1 = LEN in CHAR elements.
-       Encode UTF-16 -> UTF-8 into a 64-byte stack buffer; flush via write(2)
-       when the buffer fills (>= 60 bytes used) and at end. Surrogate pairs
-       (D800..DBFF + DC00..DFFF) are decoded to a single codepoint and
-       emitted as 4 UTF-8 bytes; lone surrogates fall back to 3-byte CESU-8.
-       Registers: x3=ptr, x12=maxBytes, x9=inOff, x4=buf, x5=outOff,
-                  x6=hi, x7=lo/scratch, x8=bigConst, x10=writeBase,
-                  x11=0x3F, x13=0x80, x14/x15=encode scratch. *)
-    G.AddImm(SP, SP, -64);
-    G.Mov(3, 0);
-    G.Add(12, 1, 1);
-    G.MovImm(9, 0);
-    G.MovImm(5, 0);
-    G.Mov(4, SP);
-    G.MovImm(11, 3FH);
-    G.MovImm(13, 80H);
-
-    osLoop := G.Here();
-    G.Cmp(9, 12);
-    G.BCond(2 (* HS *), 0); osBR1 := G.Here() - 1;
-
-    G.CmpImm(5, 60);
-    G.BCond(3 (* LO *), 0); osNoFlush := G.Here() - 1;
-    G.MovImm(0, 1);
-    G.Mov(1, 4);
-    G.Mov(2, 5);
-    G.MovImm(16, 4);
-    G.Svc(0);
-    G.MovImm(5, 0);
-    G.PatchBCond(osNoFlush, G.Here());
-
-    G.LdrReg(6, 3, 9, 2);
-    G.CmpImm(6, 0);
-    G.BCond(0 (* EQ *), 0); osBR2 := G.Here() - 1;
-
-    G.Add(10, 4, 5);
-
-    G.CmpImm(6, 80H);
-    G.BCond(2 (* HS *), 0); osChk2 := G.Here() - 1;
-    (* 1 byte: c < 0x80 *)
-    G.StrImm(6, 10, 0, 1);
-    G.AddImm(5, 5, 1);
-    G.AddImm(9, 9, 2);
-    G.B(osLoop - G.Here());
-
-    G.PatchBCond(osChk2, G.Here());
-    G.CmpImm(6, 800H);
-    G.BCond(2 (* HS *), 0); osChkSurr := G.Here() - 1;
-    (* 2 bytes: 0x80..0x7FF *)
-    G.AsrImm(14, 6, 6);
-    G.AddImm(14, 14, 0C0H);
-    G.StrImm(14, 10, 0, 1);
-    G.And(15, 6, 11);
-    G.Add(15, 15, 13);
-    G.StrImm(15, 10, 1, 1);
-    G.AddImm(5, 5, 2);
-    G.AddImm(9, 9, 2);
-    G.B(osLoop - G.Here());
-
-    G.PatchBCond(osChkSurr, G.Here());
-    (* c >= 0x800: handle surrogate pair or 3-byte BMP *)
-    G.MovImm(7, 0D800H);
-    G.Cmp(6, 7);
-    G.BCond(3 (* LO *), 0); osNoSurrA := G.Here() - 1;  (* c < 0xD800 -> 3byte *)
-    G.MovImm(7, 0DC00H);
-    G.Cmp(6, 7);
-    G.BCond(2 (* HS *), 0); osNoSurrB := G.Here() - 1;  (* c >= 0xDC00 -> 3byte CESU-8 or BMP *)
-
-    (* high surrogate; check next CHAR exists *)
-    G.AddImm(7, 9, 2);
-    G.Cmp(7, 12);
-    G.BCond(2 (* HS *), 0); osNoSurrC := G.Here() - 1;  (* no next -> 3byte CESU-8 *)
-    G.LdrReg(7, 3, 7, 2);
-    G.MovImm(8, 0DC00H);
-    G.Cmp(7, 8);
-    G.BCond(3 (* LO *), 0); osNoSurrD := G.Here() - 1;  (* not low surr *)
-    G.MovImm(8, 0E000H);
-    G.Cmp(7, 8);
-    G.BCond(2 (* HS *), 0); osNoSurrE := G.Here() - 1;  (* not low surr *)
-
-    (* surrogate pair: cp = (hi - D800) << 10 + (lo - DC00) + 0x10000 *)
-    G.MovImm(8, 0D800H);
-    G.Sub(6, 6, 8);
-    G.MovImm(8, 0DC00H);
-    G.Sub(7, 7, 8);
-    G.AddLsl(14, 7, 6, 10);
-    G.MovImm(8, 10000H);
-    G.Add(14, 14, 8);
-
-    G.AsrImm(15, 14, 18);
-    G.AddImm(15, 15, 0F0H);
-    G.StrImm(15, 10, 0, 1);
-    G.AsrImm(15, 14, 12);
-    G.And(15, 15, 11);
-    G.Add(15, 15, 13);
-    G.StrImm(15, 10, 1, 1);
-    G.AsrImm(15, 14, 6);
-    G.And(15, 15, 11);
-    G.Add(15, 15, 13);
-    G.StrImm(15, 10, 2, 1);
-    G.And(15, 14, 11);
-    G.Add(15, 15, 13);
-    G.StrImm(15, 10, 3, 1);
-    G.AddImm(5, 5, 4);
-    G.AddImm(9, 9, 4);  (* consumed 2 CHARs *)
-    G.B(osLoop - G.Here());
-
-    (* 3-byte path: BMP non-surrogate or lone surrogate (CESU-8) *)
-    os3byte := G.Here();
-    G.PatchBCond(osNoSurrA, os3byte);
-    G.PatchBCond(osNoSurrB, os3byte);
-    G.PatchBCond(osNoSurrC, os3byte);
-    G.PatchBCond(osNoSurrD, os3byte);
-    G.PatchBCond(osNoSurrE, os3byte);
-    G.AsrImm(14, 6, 12);
-    G.AddImm(14, 14, 0E0H);
-    G.StrImm(14, 10, 0, 1);
-    G.AsrImm(14, 6, 6);
-    G.And(14, 14, 11);
-    G.Add(14, 14, 13);
-    G.StrImm(14, 10, 1, 1);
-    G.And(14, 6, 11);
-    G.Add(14, 14, 13);
-    G.StrImm(14, 10, 2, 1);
-    G.AddImm(5, 5, 3);
-    G.AddImm(9, 9, 2);
-    G.B(osLoop - G.Here());
-
-    (* tail flush + epilogue *)
-    osFlushEnd := G.Here();
-    G.PatchBCond(osBR1, osFlushEnd);
-    G.PatchBCond(osBR2, osFlushEnd);
-    G.CmpImm(5, 0);
-    G.BCond(0 (* EQ *), 0); osSkipFlushWrite := G.Here() - 1;
-    G.MovImm(0, 1);
-    G.Mov(1, 4);
-    G.Mov(2, 5);
-    G.MovImm(16, 4);
-    G.Svc(0);
-    G.PatchBCond(osSkipFlushWrite, G.Here());
-    G.AddImm(SP, SP, 64)
-  ELSIF x.a = -6 (* Out.Int *) THEN
-    (* Print integer as decimal text.
-       On entry: x0 = i (LONGINT), w1 = n (ignored).
-       Scratch registers: x9=value, x10=divisor, x11=digit, x12=mod scratch, x13=div scratch *)
-    G.AddImm(SP, SP, -16);
-
-    (* x9 := i (already 64-bit if LONGINT; narrower types widened by calling convention) *)
-    G.Mov(9, 0);
-
-    (* IF i < 0 THEN print '-'; i := -i END *)
-    G.CmpImm(9, 0);           (* CMP x9, #0 *)
-    skipNeg := G.Here();
-    G.BCond(10 (* GE *), 0);  (* B.GE skipNeg — skip if i >= 0 *)
-
-    G.MovImm(11, 2DH);        (* w11 := '-' *)
-    G.StrImm(11, SP, 0, 1);   (* STRB w11, [sp, #0] *)
-    G.MovImm(0, 1);           (* x0 := 1 (stdout) *)
-    G.Mov(1, SP);             (* x1 := sp *)
-    G.MovImm(2, 1);           (* x2 := 1 *)
-    G.MovImm(16, 4);          (* x16 := write syscall *)
-    G.Svc(0);
-    G.Neg(9, 9);              (* NEG x9, x9 *)
-
-    FixLink(skipNeg);         (* skipNeg: *)
-
-    (* x := 1 *)
-    G.MovImm(10, 1);          (* x10 := 1 *)
-
-    (* WHILE x <= i DIV 10 DO x := x * 10 END *)
-    loop1 := G.Here();
-    G.MovImm(11, 10);         (* x11 := 10 *)
-    G.Div(12, 9, 11);         (* x12 := x9 DIV 10 *)
-    G.Cmp(10, 12);            (* CMP x10, x12 *)
-    exitLoop1 := G.Here();
-    G.BCond(12 (* GT *), 0);  (* B.GT exitLoop1 *)
-    G.MovImm(11, 10);         (* x11 := 10 *)
-    G.Mul(10, 10, 11);        (* x10 := x10 * 10 *)
-    G.B(loop1 - G.Here());  (* B loop1 *)
-    FixLink(exitLoop1);       (* exitLoop1: *)
-
-    (* WHILE x # 0 DO Out.Char(CHR(i DIV x MOD 10 + 30H)); x := x DIV 10 END *)
-    loop2 := G.Here();
-    G.CmpImm(10, 0);          (* CMP x10, #0 *)
-    exitLoop2 := G.Here();
-    G.BCond(0 (* EQ *), 0);   (* B.EQ exitLoop2 *)
-
-    G.Div(11, 9, 10);         (* x11 := x9 DIV x10 *)
-    G.MovImm(12, 10);         (* x12 := 10 *)
-    G.Div(13, 11, 12);        (* x13 := x11 DIV 10 *)
-    G.Msub(11, 13, 12, 11);   (* x11 := x11 - x13*10  =  (i DIV x) MOD 10 *)
-    G.AddImm(11, 11, 30H);    (* x11 := x11 + 0x30  — ASCII digit *)
-
-    G.StrImm(11, SP, 0, 1);   (* STRB w11, [sp, #0] *)
-    G.MovImm(0, 1);           (* x0 := 1 (stdout) *)
-    G.Mov(1, SP);             (* x1 := sp *)
-    G.MovImm(2, 1);           (* x2 := 1 *)
-    G.MovImm(16, 4);          (* x16 := write syscall *)
-    G.Svc(0);
-
-    G.MovImm(12, 10);         (* x12 := 10 *)
-    G.Div(10, 10, 12);        (* x10 := x10 DIV 10 *)
-    G.B(loop2 - G.Here());  (* B loop2 *)
-    FixLink(exitLoop2);       (* exitLoop2: *)
-
-    G.AddImm(SP, SP, 16)      (* sp := sp + 16 *)
-  ELSIF x.a = -7 (* Out.Ln *) THEN
-    (* sp must stay 16-byte aligned -> reserve 16 bytes *)
-    G.AddImm(SP, SP, -16);    (* sp := sp - 16 *)
-
-    G.MovImm(3, 0AH);        (* w3 := 0x0A *)
-    G.StrImm(3, SP, 0, 1);   (* STRB w3, [sp,#0] *)
-
-    G.MovImm(0, 1);          (* x0 := 1 (stdout) *)
-    G.Mov(1, SP);            (* x1 := sp (address of byte) *)
-    G.MovImm(2, 1);          (* x2 := 1 (length) *)
-
-    G.MovImm(16, 4);         (* x16 := write syscall number *)
-    G.Svc(0);
-
-    G.AddImm(SP, SP, 16)     (* sp := sp + 16 *)
+  IF x.a = -100 (* SYSTEM.SVC(n [, a0 .. a5]): LONGINT; RH = arity *) THEN
+    (* x0..x(RH-1) hold actuals; Darwin ABI wants n in x16, args in x0.. *)
+    G.Mov(16, 0);
+    FOR i := 1 TO RH - 1 DO
+      G.Mov(i - 1, i)
+    END;
+    G.Svc(0)
   ELSE (* user-defined procedure call *)
     IF x.mode = ST.Const THEN (* direct call *)
-      IF ~proc.procResolved THEN
+      IF proc.external THEN
+        (* Cross-module call: placeholder BL + extCallReloc for linker *)
+        ST.GetName(proc.names, pname);
+        G.CallExt(proc.importIdx, pname)
+      ELSIF ~proc.procResolved THEN
         (* Forward reference: emit BL with head-link, chain via imm26 *)
         G.Bl(proc.fixupList);
         proc.fixupList := G.Here() - 1
@@ -1839,7 +2970,7 @@ BEGIN
       G.Mov(rx, 0)
     END;
     FOR i := 0 TO rx - 1 DO
-      G.LdrImm(i, SP, i * 8, 8)
+      LoadAt(i, SP, i * 8, 8)
     END;
     G.AddImm(SP, SP, ((rx + 1) DIV 2) * 16);
     RH := rx
@@ -1865,26 +2996,46 @@ BEGIN
   p.procResolved := TRUE
 END ResolveProc;
 
-(** Procedure prologue: save FP, LR, allocate locals.
-    frameSize must be 16-byte aligned, includes saved FP/LR (16 bytes).
-    nofPars = number of value/var parameters (max 8).
-    parSize = total size of parameters in frame in bytes. *)
-PROCEDURE ProcPrologue*(frameSize, nofPars, parSize: INTEGER);
-VAR i: INTEGER;
+(** Module init proc prologue: save FP, LR.  No parameters, no locals. *)
+PROCEDURE ModuleInitPrologue*;
 BEGIN
-  G.Stp(FP, LR, SP, -frameSize); (* STP x29, x30, [sp, #-frameSize]! *)
-  G.Mov(FP, SP);                 (* MOV x29, sp *)
-  (* Store register parameters into frame *)
-  FOR i := 0 TO nofPars - 1 DO
-    G.StrImm(i, FP, 16 + i * 8, 8) (* STR xi, [x29, #16+i*8] *)
-  END
+  G.Stp(FP, LR, SP, -16);
+  G.Mov(FP, SP)
+END ModuleInitPrologue;
+
+(** Emit module init epilogue. *)
+PROCEDURE ModuleInitEpilogue*;
+BEGIN
+  RH := 0;
+  G.Ldp(FP, LR, SP, 16);
+  G.Ret()
+END ModuleInitEpilogue;
+
+(** Procedure prologue: stp fp,lr,[sp,#-16]!; mov fp,sp; sub sp,#(frame-16);
+    spill x0.. into param slots at FP- parBytes + i*8. *)
+PROCEDURE ProcPrologue*(frameSize, nSlots: INTEGER);
+VAR i, below, parBytes: INTEGER;
+BEGIN
+  G.Stp(FP, LR, SP, -16);
+  G.Mov(FP, SP);
+  below := frameSize - 16;
+  IF below # 0 THEN AdjustSP(-below) END;
+  parBytes := nSlots * 8;
+  RH := nSlots;
+  FOR i := 0 TO nSlots - 1 DO
+    StoreAt(i, FP, -parBytes + i * 8, 8)
+  END;
+  RH := 0
 END ProcPrologue;
 
-(** Procedure epilogue: restore FP, LR, return *)
+(** Procedure epilogue: drop stack below link, restore FP/LR, return. *)
 PROCEDURE ProcEpilogue*(frameSize: INTEGER);
+VAR below: INTEGER;
 BEGIN
-  G.Ldp(FP, LR, SP, frameSize); (* LDP x29, x30, [sp], #frameSize *)
-  G.Ret()                       (* RET *)
+  below := frameSize - 16;
+  IF below # 0 THEN AdjustSP(below) END;
+  G.Ldp(FP, LR, SP, 16);
+  G.Ret()
 END ProcEpilogue;
 
 (** Load function return value into x0 *)
@@ -1894,11 +3045,6 @@ BEGIN
   IF x.r # 0 THEN G.Mov(0, x.r) END;
   RH := 0
 END ReturnVal;
-
-(** Set RH to given value (used after function calls to account for result) *)
-PROCEDURE FixRH*(val: INTEGER);
-BEGIN RH := val
-END FixRH;
 
 (** FOR loop support **)
 
@@ -2030,6 +3176,81 @@ BEGIN
   G.Exit
 END Exit;
 
+PROCEDURE SetNoAssert*(on: BOOLEAN);
+BEGIN
+  noAssert := on;
+  IF on THEN G.SetCompileFlags(M.compileFlagNoAssert)
+  ELSE G.SetCompileFlags(0)
+  END
+END SetNoAssert;
+
+PROCEDURE SetModuleName*(modName: ARRAY OF CHAR);
+VAR idx, len: INTEGER;
+BEGIN
+  len := 0; WHILE (modName[len] # 0X) & (len < LEN(modName) - 1) DO INC(len) END;
+  idx := ST.RegisterString(modName, len);
+  assertModIdx := idx;
+  assertModLen := len
+END SetModuleName;
+
+PROCEDURE SetProcName*(procName: ARRAY OF CHAR);
+VAR idx, len: INTEGER;
+BEGIN
+  len := 0; WHILE (procName[len] # 0X) & (len < LEN(procName) - 1) DO INC(len) END;
+  idx := ST.RegisterString(procName, len);
+  assertProcIdx := idx;
+  assertProcLen := len
+END SetProcName;
+
+PROCEDURE CallKernelAssert(n, line: INTEGER);
+VAR rx, importIdx, slot, i: INTEGER;
+  dummy, m, p, ml, pl, ln, nc: Item;
+BEGIN
+  importIdx := G.AddImport('Kernel');
+  MakeConstItem(dummy, ST.intType, 0);
+  PrepCall(dummy, rx);
+  slot := 0;
+  MakeStringConstItem(m, assertModIdx, assertModLen);
+  VarParam(m, slot); INC(slot);
+  MakeConstItem(ml, ST.intType, assertModLen + 1);
+  ValueParam(ml, slot); INC(slot);
+  MakeStringConstItem(p, assertProcIdx, assertProcLen);
+  VarParam(p, slot); INC(slot);
+  MakeConstItem(pl, ST.intType, assertProcLen + 1);
+  ValueParam(pl, slot); INC(slot);
+  MakeConstItem(ln, ST.intType, line);
+  ValueParam(ln, slot); INC(slot);
+  MakeConstItem(nc, ST.intType, n);
+  ValueParam(nc, slot);
+  G.CallExt(importIdx, 'Assert');
+  IF rx > 0 THEN
+    FOR i := 0 TO rx - 1 DO LoadAt(i, SP, i * 8, 8) END;
+    G.AddImm(SP, SP, ((rx + 1) DIV 2) * 16);
+    RH := rx
+  ELSE RH := 0
+  END
+END CallKernelAssert;
+
+(** ASSERT(b [, n]): on FALSE call Kernel.Assert(mod, proc, line, n). *)
+PROCEDURE Assert*(VAR x: Item; n, line: INTEGER);
+VAR okL: INTEGER;
+BEGIN
+  IF ~noAssert THEN
+    IF (x.mode = ST.Const) & (x.type.form = ST.Bool) THEN
+      IF x.a = 0 THEN CallKernelAssert(n, line) END
+    ELSE
+      IF x.type.form # ST.Bool THEN S.Mark(E.expBool) END;
+      Load(x);
+      G.CmpImm(x.r, 0);
+      G.BCond(NE, 0); okL := G.Here() - 1;
+      CallKernelAssert(n, line);
+      G.PatchBCond(okL, G.Here());
+      DEC(RH);
+      FixRH(0)
+    END
+  END
+END Assert;
+
 (** Generates a trap instruction for unmatched CASE. *)
 PROCEDURE Trap*;
 BEGIN
@@ -2040,7 +3261,10 @@ PROCEDURE Init*;
 BEGIN
   RH := 0;
   SH := firstCSReg;
-
+  assertModIdx := 0;
+  assertModLen := 0;
+  assertProcIdx := 0;
+  assertProcLen := 0;
   G.Init
 END Init;
 

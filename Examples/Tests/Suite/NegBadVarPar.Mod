@@ -1,0 +1,4 @@
+MODULE NegBadVarPar;
+VAR b: BYTE;
+PROCEDURE Take(VAR n: INTEGER); BEGIN END Take;
+BEGIN Take(b) END NegBadVarPar.

@@ -1,0 +1,3 @@
+MODULE NegFewerParams;
+PROCEDURE P(a, b: INTEGER); BEGIN END P;
+BEGIN P(1) END NegFewerParams.

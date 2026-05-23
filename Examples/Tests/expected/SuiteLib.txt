@@ -1,0 +1,12 @@
+--- Encode/Decode ---
+Encode: Done = TRUE
+UTF-8 bytes: 41 D0 90 E2 82 BD 00 00
+Decode: Done = TRUE
+Decoded codepoints: 0041 0410 20BD
+--- DecodeChar/EncodeChar ---
+decoded byte 1+: codepoint=0410
+DecodeCharEx bytes=2
+Euro single-char encoded len=3: E2 82 AC
+heap ok
+Hi1hi АР
+ABC

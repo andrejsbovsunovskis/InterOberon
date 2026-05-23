@@ -1,0 +1,4 @@
+MODULE Trim;
+VAR x: SHORTINT;
+BEGIN
+END Trim.

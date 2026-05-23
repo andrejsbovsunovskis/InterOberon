@@ -1,0 +1,4 @@
+MODULE NegDeepReturnBool;
+PROCEDURE F(): INTEGER;
+BEGIN RETURN TRUE END F;
+BEGIN Out.Int(F(), 0) END NegDeepReturnBool.

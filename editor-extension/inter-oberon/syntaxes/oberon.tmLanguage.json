@@ -155,12 +155,12 @@
 
     "types": {
       "name": "support.type.oberon",
-      "match": "(?<![\\p{L}\\p{N}_])(INTEGER|SHORTINT|LONGINT|REAL|LONGREAL|BOOLEAN|CHAR|BYTE|SET|LONGSET|ЦЕЛОЕ|КОРЦЕЛОЕ|ДЛИНЦЕЛОЕ|ВЕЩЕСТ|БУЛЕВ|ЛИТЕРА|БАЙТ|МНОЖ|ДЛИНМНОЖ|VESELAIS|ĪSAISVES|GARAISVES|REĀLAIS|BŪLA|LITERA|BAITS|KOPA|GARAKOPA)(?![\\p{L}\\p{N}_])"
+      "match": "(?<![\\p{L}\\p{N}_])(INTEGER|SHORTINT|LONGINT|TINYINT|REAL|LONGREAL|BOOLEAN|CHAR|BYTE|SET|LONGSET|TINYSET|SHORTSET|BITS|ORD|БИТЫ|ОРД|ЦЕЛОЕ|КОРЦЕЛОЕ|ДЛИНЦЕЛОЕ|КРОШЦЕЛ|ВЕЩЕСТ|БУЛЕВ|ЛИТЕРА|БАЙТ|МНОЖ|ДЛИНМНОЖ|КРОШМНОЖ|КОРМНОЖ|VESELAIS|ĪSAISVES|GARAISVES|SĪKAISVES|REĀLAIS|BŪLA|LITERA|BAITS|KOPA|GARAKOPA|SĪKAKOPA|ĪSAKOPA)(?![\\p{L}\\p{N}_])"
     },
 
     "builtins": {
       "name": "support.function.builtin.oberon",
-      "match": "(?<![\\p{L}\\p{N}_])(ABS|ASR|ASSERT|CHR|DEC|EXCL|FLOOR|FLT|INC|INCL|LEN|LSL|NEW|ODD|ORD|PACK|ROR|UNPK|HALT|COPY|SIZE|SHORT|LONG|АБС|АСП|ЛИТ|УМЕН|ИСКЛ|ЦЕЛ|ВЕЩ|УВЕЛ|ВКЛ|ДЛИНА|ЛСЛ|НЕЧ|ОРД|ЦСП|УКОР|УДЛИН|ABS|ASR|LIT|SAMAZ|IZSL|LEJUP|UZREĀLO|PALIEL|IEKL|GARUMS|LSL|NEPAR|ORD|ROR|ĪSAIS|GARAIS)(?![\\p{L}\\p{N}_])"
+      "match": "(?<![\\p{L}\\p{N}_])(ABS|ASR|ASSERT|CHR|DEC|ENTIER|EXCL|FLOOR|FLT|INC|INCL|LEN|LONGFLT|LSL|NEW|ODD|ORD|PACK|ROR|UNPK|HALT|COPY|SIZE|SHORT|LONG|АБС|АСП|ЛИТ|УМЕН|ИСКЛ|ЦЕЛ|ВЕЩ|ДЛИНЦЕЛ|ДЛИНВЕЩ|УВЕЛ|ВКЛ|ДЛИНА|ЛСЛ|НЕЧ|ОРД|ЦСП|УКОР|УДЛИН|ABS|ASR|LIT|SAMAZ|IZSL|LEJUP|UZREĀLO|GARALEJUP|GARAISFLT|PALIEL|IEKL|GARUMS|LSL|NEPAR|ORD|ROR|ĪSAIS|GARAIS)(?![\\p{L}\\p{N}_])"
     },
 
     "export-mark": {

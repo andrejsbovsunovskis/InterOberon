@@ -1,0 +1,5 @@
+MODULE AssertFailN;
+
+BEGIN
+  ASSERT(FALSE, 42)
+END AssertFailN.

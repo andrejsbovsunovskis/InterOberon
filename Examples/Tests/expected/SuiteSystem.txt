@@ -1,0 +1,34 @@
+0mem: PUT/GET INTEGER -- OK
+mem: PUT/GET BYTE -- OK
+mem: BIT0 set -- OK
+mem: BIT31 set -- OK
+mem: GET SET -- OK
+1
+1
+1
+mem: COPY overlap -- OK
+sys: DIV/MOD trunc -- OK
+sys: DIV/MOD floor -- OK
+sys: DIV unary prec -- OK
+sys: UNPK 12 -- OK
+sys: PACK 1.5 -- OK
+sys: PACK/UNPK round -- OK
+sys: PACK neg exp -- OK
+flag: ADC carry -- OK
+flag: ADC sum -- OK
+flag: ADC chain -- OK
+flag: SBC -- OK
+
+flag: UML -- OK
+flag: COND AL -- OK
+flag: COND NV -- OK
+fixed: ADR(fixed) = ADR(fixed[0]) -- OK
+fixed: ADR(fixed[1]) - ADR(fixed[0]) = 1 -- OK
+scalar: ADR # 0 -- OK
+open: ADR(a) = ADR(a[0]) -- OK
+adrint: assign LONGINT round-trip -- OK
+adrint: two distinct addrs differ -- OK
+val: BYTE trunc -- OK
+val: LONGINT sign -- OK
+adrint: SHORT preserves low 32 bits -- OK
+adrint: LONG is value-preserving -- OK
