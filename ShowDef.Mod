@@ -169,6 +169,10 @@ BEGIN
       AppendSymName('_Build/', plain, path);
       ok := TrySymAt(path, found)
     END;
+    IF ~ok THEN
+      AppendSymName('Lib/_Build/', plain, path);
+      ok := TrySymAt(path, found)
+    END;
     IF ~ok & (symDir[0] # 0X) THEN
       AppendSymName(symDir, plain, path);
       ok := TrySymAt(path, found)
