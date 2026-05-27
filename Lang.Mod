@@ -36,7 +36,7 @@ TYPE
 
   Module = RECORD
     name: Pair;
-    objs: ARRAY 16 OF Pair
+    objs: ARRAY 32 OF Pair
   END;
 
 VAR
@@ -191,13 +191,18 @@ BEGIN
   ClearPairs(m);
   i := 0;
   WHILE sym = string DO
-    Strings.Copy(sval, m[i].key);
-    GetSym;
-    IF sym = eql THEN GetSymLn ELSE Mark(expEql) END;
-    IF sym = string THEN Strings.Copy(sval, m[i].value); GetSym
-    ELSE Mark(expString)
-    END;
-    INC(i)
+    IF i < LEN(m) THEN
+      Strings.Copy(sval, m[i].key);
+      GetSym;
+      IF sym = eql THEN GetSymLn ELSE Mark(expEql) END;
+      IF sym = string THEN Strings.Copy(sval, m[i].value); GetSym
+      ELSE Mark(expString)
+      END;
+      INC(i)
+    ELSE Mark(rangeError); GetSym;
+      IF sym = eql THEN GetSymLn END;
+      IF sym = string THEN GetSym END
+    END
   END
 END ReadStrSection;
 

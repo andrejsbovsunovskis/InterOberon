@@ -9,10 +9,12 @@ lib: InterOberon
 	@./InterOberon --build-lib
 
 InterOberon: *.Mod
-	cd $(FOBDIR) && $(FOB) -o $(SRCDIR)/InterOberon $(SRCDIR)/InterOberon.Mod
+	cd $(FOBDIR) && $(FOB) $(SRCDIR)/InterOberon.Mod
+	mv $(FOBDIR)/InterOberon $(SRCDIR)/InterOberon
 
 showdef: ShowDef.Mod InterOberon
-	cd $(FOBDIR) && $(FOB) -o $(SRCDIR)/showdef $(SRCDIR)/ShowDef.Mod
+	cd $(FOBDIR) && $(FOB) $(SRCDIR)/ShowDef.Mod
+	mv $(FOBDIR)/ShowDef $(SRCDIR)/showdef
 
 run: all
 	@clear
