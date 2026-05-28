@@ -39,7 +39,7 @@ VAR
   visited:   ARRAY maxModules OF BOOLEAN;
 
   (** CLI flags / parsed command. *)
-  exactFlag, noExtWarn, noAssert, forceFlag, buildLibFlag: BOOLEAN;
+  exactFlag, noExtWarn, noAssert, forceFlag, buildLibFlag, verboseFlag: BOOLEAN;
   cmdMod, cmdProc: ARRAY maxName OF CHAR;
   rootArg: ARRAY maxPath OF CHAR;
 
@@ -56,6 +56,7 @@ BEGIN
   Out.String('  --build-dir <d/> Object/symbol output (default: _Build/)'); Out.Ln;
   Out.String('  -f, --force       Recompile all modules'); Out.Ln;
   Out.String('  --build-lib       Populate Lib/_Build/ from Lib/ sources'); Out.Ln;
+  Out.String('  --verbose         Print module build/up-to-date messages'); Out.Ln;
   Out.String('  -c                Compile to .obj/.sym only (no link)'); Out.Ln;
   Out.String('  -l                Link a single .obj only'); Out.Ln;
   Out.String('  --cmd <Mod.Proc>  Specify program command'); Out.Ln;
@@ -64,7 +65,7 @@ BEGIN
   Out.String('  --no-assert       Omit code generation for ASSERT'); Out.Ln;
   Out.String('  -h, --help        Show this help'); Out.Ln; Out.Ln;
   Out.String('Environment:'); Out.Ln;
-  Out.String('  INTEROBERON_HOME  Colon-separated install roots that hold'); Out.Ln;
+  Out.String('  INTEROBERON_ROOT  Colon-separated install roots that hold'); Out.Ln;
   Out.String('                    Lib/ and Langs/.  CWD and the directory'); Out.Ln;
   Out.String('                    of the running compiler are always tried.'); Out.Ln
 END Usage;
@@ -358,7 +359,8 @@ RETURN flags END ExpectedCompileFlags;
 
 PROCEDURE ArtifactsCurrent(idx: INTEGER): BOOLEAN;
 VAR dir, sym, obj: ARRAY maxPath OF CHAR;
-  tSrc, tSym, tObj, expFlags: INTEGER;
+  tSrc, tSym, tObj: INTEGER;
+  expFlags: INTEGER;
 BEGIN
   ModuleArtifactDir(idx, dir);
   M.ArtifactPath(dir, modNames[idx], '.sym', sym);
@@ -424,8 +426,8 @@ VAR envPath, appDir, root: ARRAY maxPath OF CHAR;
   i, j: INTEGER;
 BEGIN
   nHomeRoots := 0;
-  (* 1. $INTEROBERON_HOME -- colon-separated list of directories. *)
-  Env.GetByName('INTEROBERON_HOME', envPath);
+  (* 1. $INTEROBERON_ROOT -- colon-separated list of directories. *)
+  Env.GetByName('INTEROBERON_ROOT', envPath);
   IF envPath[0] # 0X THEN
     i := 0;
     WHILE envPath[i] # 0X DO
@@ -694,7 +696,7 @@ VAR mname: ARRAY maxName OF CHAR;
 BEGIN
   ok := FALSE;
   IF ~needCompile[idx] THEN
-    M.WriteS2(E.compileOk1, modNames[idx], E.compileSkip); Out.Ln;
+    IF verboseFlag THEN M.WriteS2(E.compileOk1, modNames[idx], E.compileSkip) END;
     ok := TRUE
   ELSE
     ModuleArtifactDir(idx, dir);
@@ -703,7 +705,7 @@ BEGIN
     IF Parser.Load(modPaths[idx]) THEN
       IF Parser.Compile() THEN
         Parser.GetModName(mname);
-        M.WriteS2(E.compileOk1, mname, E.compileOk2); Out.Ln;
+        IF verboseFlag THEN M.WriteS2(E.compileOk1, mname, E.compileOk2) END;
         ok := TRUE
       ELSE
         M.WriteError(E.compileFail)
@@ -947,6 +949,7 @@ BEGIN
   noAssert := FALSE;
   forceFlag := FALSE;
   buildLibFlag := FALSE;
+  verboseFlag := FALSE;
   cmdMod[0] := 0X; cmdProc[0] := 0X;
   noLink := FALSE; helped := FALSE; gotCmd := FALSE; done := FALSE;
   code := 0; nPos := 0;
@@ -969,6 +972,8 @@ BEGIN
       forceFlag := TRUE; INC(i)
     ELSIF a = '--build-lib' THEN
       buildLibFlag := TRUE; INC(i)
+    ELSIF a = '--verbose' THEN
+      verboseFlag := TRUE; INC(i)
     ELSIF a = '--build-dir' THEN
       INC(i);
       IF i <= n THEN Args.Get(i, opt); M.SetBuildDir(opt); INC(i) END

@@ -96,7 +96,7 @@ VAR
   pendingSym: INTEGER; (* Saved symbol for real literal lookahead *)
 
   error*: BOOLEAN; (* FALSE if ok *)
-  errPos: INTEGER; (* Position of last error *)
+  errPos: LONGINT; (* Position of last error *)
 
   transCount*: INTEGER;
   transSeqInGap*: INTEGER; (** Translation comments in current Get without a token between *)
@@ -145,7 +145,7 @@ BEGIN
 END GetPos;
 
 PROCEDURE Mark*(errCode: INTEGER);
-VAR pos: INTEGER;
+VAR pos: LONGINT;
 BEGIN
   error := TRUE; pos := Files.Pos(r);
   IF pos > errPos + 4 THEN

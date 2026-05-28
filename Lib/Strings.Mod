@@ -1,7 +1,7 @@
 MODULE Strings; (**%RU:Строки%LV:Virknes*)
 (** Operations on null-terminated character arrays (positions start at 0). *)
 
-PROCEDURE Length*(s: ARRAY OF CHAR): INTEGER; (**%RU:Длина,строка%LV:Garums,virkne*)
+PROCEDURE Length*(s: ARRAY OF CHAR): INTEGER; (**%RU:Длина,с%LV:Garums,v*)
 VAR i: INTEGER;
 BEGIN
   i := 0;
@@ -20,9 +20,9 @@ PROCEDURE Insert*(source: ARRAY OF CHAR; pos: INTEGER; VAR dest: ARRAY OF CHAR);
 VAR n1, n2, len, i, j: INTEGER;
 BEGIN
   n1 := Length(dest); n2 := Length(source); len := LEN(dest);
-  IF pos < 0 THEN pos := 0 END;
   IF pos > n1 THEN Append(source, dest)
   ELSE
+    IF pos < 0 THEN pos := 0 END;
     IF pos + n2 < len THEN
       i := n1; j := i + n2;
       WHILE i >= pos DO
@@ -78,7 +78,7 @@ BEGIN
   END
 END Extract;
 
-PROCEDURE Copy*(src: ARRAY OF CHAR; VAR dst: ARRAY OF CHAR);
+PROCEDURE Copy*(src: ARRAY OF CHAR; VAR dst: ARRAY OF CHAR); (**%RU:Копировать,откуда,куда%LV:Kopēt,avots,kur*)
 VAR i, len: INTEGER;
 BEGIN
   IF LEN(src) < LEN(dst) THEN len := LEN(src) - 1 ELSE len := LEN(dst) - 1 END;

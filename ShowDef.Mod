@@ -18,6 +18,8 @@ TYPE
 VAR
   homeRoots: ARRAY maxHomeRoots, maxPath OF CHAR;
   nHomeRoots: INTEGER;
+  appDir: ARRAY maxPath OF CHAR;
+  libSymDir: ARRAY maxPath OF CHAR;
   symDir: ARRAY maxPath OF CHAR;
   modArgs: ARRAY maxMods, maxPath OF CHAR;
   nMods: INTEGER;
@@ -39,27 +41,89 @@ VAR
   kwDef, kwType, kwVar, kwConst, kwEnd: ARRAY 32 OF CHAR;
   kwRecord, kwPointer, kwTo, kwArray, kwOf, kwProcedure: ARRAY 32 OF CHAR;
 
-PROCEDURE AddHomeRoot(root: ARRAY OF CHAR);
+PROCEDURE FileExists(path: ARRAY OF CHAR): BOOLEAN;
+BEGIN RETURN Files.Old(path) # NIL END FileExists;
+
+PROCEDURE NormalizeRoot(VAR root: ARRAY OF CHAR);
 VAR i: INTEGER;
 BEGIN
-  IF nHomeRoots < maxHomeRoots THEN
-    Strings.Copy(root, homeRoots[nHomeRoots]);
-    i := 0;
-    WHILE homeRoots[nHomeRoots, i] # 0X DO INC(i) END;
-    IF (i > 0) & (homeRoots[nHomeRoots, i - 1] # '/') THEN
-      homeRoots[nHomeRoots, i] := '/';
-      homeRoots[nHomeRoots, i + 1] := 0X
-    END;
+  i := 0;
+  WHILE root[i] # 0X DO INC(i) END;
+  IF (i > 0) & (root[i - 1] # '/') THEN
+    root[i] := '/';
+    root[i + 1] := 0X
+  END
+END NormalizeRoot;
+
+(** Append a search root, deduplicating by literal string match. *)
+PROCEDURE AddHomeRoot(root: ARRAY OF CHAR);
+VAR i: INTEGER; dup: BOOLEAN; r: ARRAY maxPath OF CHAR;
+BEGIN
+  Strings.Copy(root, r);
+  NormalizeRoot(r);
+  dup := FALSE;
+  i := 0;
+  WHILE i < nHomeRoots DO
+    IF homeRoots[i] = r THEN dup := TRUE END;
+    INC(i)
+  END;
+  IF ~dup & (nHomeRoots < maxHomeRoots) THEN
+    Strings.Copy(r, homeRoots[nHomeRoots]);
     INC(nHomeRoots)
   END
 END AddHomeRoot;
 
-PROCEDURE InitHomeRoots;
-VAR envPath, appDir, root: ARRAY maxPath OF CHAR;
+(** Prepend install root (highest priority for --home). *)
+PROCEDURE PrependHomeRoot(root: ARRAY OF CHAR);
+VAR r: ARRAY maxPath OF CHAR;
+  i, j: INTEGER;
+BEGIN
+  Strings.Copy(root, r);
+  NormalizeRoot(r);
+  i := 0;
+  WHILE i < nHomeRoots DO
+    IF homeRoots[i] = r THEN
+      j := i;
+      WHILE j < nHomeRoots - 1 DO
+        Strings.Copy(homeRoots[j + 1], homeRoots[j]);
+        INC(j)
+      END;
+      DEC(nHomeRoots);
+    ELSE INC(i)
+    END
+  END;
+  IF nHomeRoots < maxHomeRoots THEN
+    j := nHomeRoots;
+    WHILE j > 0 DO
+      Strings.Copy(homeRoots[j - 1], homeRoots[j]);
+      DEC(j)
+    END;
+    Strings.Copy(r, homeRoots[0]);
+    INC(nHomeRoots)
+  END;
+END PrependHomeRoot;
+
+PROCEDURE PublishLangRoots;
+VAR root: ARRAY maxPath OF CHAR;
+  i: INTEGER;
+BEGIN
+  Lang.ResetSearchRoots;
+  i := 0;
+  WHILE i < nHomeRoots DO
+    Strings.Copy(homeRoots[i], root);
+    Strings.Append('Langs/', root);
+    Lang.AddSearchRoot(root);
+    INC(i)
+  END
+END PublishLangRoots;
+
+PROCEDURE BuildHomeRoots;
+VAR envPath, root: ARRAY maxPath OF CHAR;
   i, j: INTEGER;
 BEGIN
   nHomeRoots := 0;
-  Env.GetByName('INTEROBERON_HOME', envPath);
+  appDir[0] := 0X;
+  Env.GetByName('INTEROBERON_ROOT', envPath);
   IF envPath[0] # 0X THEN
     i := 0;
     WHILE envPath[i] # 0X DO
@@ -75,19 +139,66 @@ BEGIN
   END;
   AddHomeRoot('');
   Env.GetAppDir(appDir);
-  IF appDir[0] # 0X THEN AddHomeRoot(appDir) END;
-  Lang.ResetSearchRoots;
-  i := 0;
-  WHILE i < nHomeRoots DO
-    Strings.Copy(homeRoots[i], root);
-    Strings.Append('Langs/', root);
-    Lang.AddSearchRoot(root);
-    INC(i)
-  END
-END InitHomeRoots;
+  NormalizeRoot(appDir);
+  IF appDir[0] # 0X THEN AddHomeRoot(appDir) END
+END BuildHomeRoots;
 
-PROCEDURE FileExists(path: ARRAY OF CHAR): BOOLEAN;
-BEGIN RETURN Files.Old(path) # NIL END FileExists;
+PROCEDURE RootsEq(a, b: ARRAY OF CHAR): BOOLEAN;
+RETURN a = b END RootsEq;
+
+PROCEDURE LibBuildProbe(dir: ARRAY OF CHAR): BOOLEAN;
+VAR probe: ARRAY maxPath OF CHAR;
+BEGIN
+  Strings.Copy(dir, probe);
+  Strings.Append('Files.sym', probe);
+RETURN FileExists(probe) END LibBuildProbe;
+
+PROCEDURE InitLibSymDir;
+VAR dir: ARRAY maxPath OF CHAR;
+  i: INTEGER;
+  done: BOOLEAN;
+BEGIN
+  libSymDir[0] := 0X;
+  done := FALSE;
+  i := 0;
+  WHILE (i < nHomeRoots) & ~done DO
+    IF (homeRoots[i, 0] # 0X) & ~RootsEq(homeRoots[i], appDir) THEN
+      Strings.Copy(homeRoots[i], dir);
+      Strings.Append('Lib/_Build/', dir);
+      IF LibBuildProbe(dir) THEN Strings.Copy(dir, libSymDir); done := TRUE END
+    END;
+    INC(i)
+  END;
+  IF ~done & (appDir[0] # 0X) THEN
+    Strings.Copy(appDir, dir);
+    Strings.Append('Lib/_Build/', dir);
+    IF LibBuildProbe(dir) THEN Strings.Copy(dir, libSymDir); done := TRUE END
+  END;
+  IF ~done THEN
+    i := 0;
+    WHILE (i < nHomeRoots) & ~done DO
+      IF homeRoots[i, 0] = 0X THEN
+        Strings.Copy('Lib/_Build/', dir);
+        IF LibBuildProbe(dir) THEN Strings.Copy(dir, libSymDir); done := TRUE END
+      END;
+      INC(i)
+    END
+  END;
+  IF libSymDir[0] = 0X THEN
+    IF appDir[0] # 0X THEN
+      Strings.Copy(appDir, libSymDir);
+      Strings.Append('Lib/_Build/', libSymDir)
+    ELSE Strings.Copy('Lib/_Build/', libSymDir)
+    END
+  END
+END InitLibSymDir;
+
+PROCEDURE InitHomeRoots;
+BEGIN
+  BuildHomeRoots;
+  PublishLangRoots;
+  InitLibSymDir
+END InitHomeRoots;
 
 PROCEDURE AppendSymName(dir, plain: ARRAY OF CHAR; VAR path: ARRAY OF CHAR);
 BEGIN
@@ -163,28 +274,26 @@ BEGIN
     END
   ELSE
     Strings.Copy(modname, plain);
-    AppendSymName('', plain, path);
-    IF TrySymAt(path, found) THEN ok := TRUE END;
-    IF ~ok THEN
-      AppendSymName('_Build/', plain, path);
-      ok := TrySymAt(path, found)
-    END;
-    IF ~ok THEN
-      AppendSymName('Lib/_Build/', plain, path);
-      ok := TrySymAt(path, found)
-    END;
-    IF ~ok & (symDir[0] # 0X) THEN
-      AppendSymName(symDir, plain, path);
+    IF libSymDir[0] # 0X THEN
+      AppendSymName(libSymDir, plain, path);
       ok := TrySymAt(path, found)
     END;
     i := 0;
     WHILE ~ok & (i < nHomeRoots) DO
-      AppendSymName(homeRoots[i], plain, path);
-      IF TrySymAt(path, found) THEN ok := TRUE END;
+      Strings.Copy(homeRoots[i], dir);
+      Strings.Append('_Build/', dir);
+      AppendSymName(dir, plain, path);
+      ok := TrySymAt(path, found);
       IF ~ok THEN
         Strings.Copy(homeRoots[i], dir);
-        Strings.Append('_Build/', dir);
-        AppendSymName(dir, plain, path);
+        Strings.Append('Lib/_Build/', dir);
+        IF ~RootsEq(dir, libSymDir) THEN
+          AppendSymName(dir, plain, path);
+          ok := TrySymAt(path, found)
+        END
+      END;
+      IF ~ok THEN
+        AppendSymName(homeRoots[i], plain, path);
         ok := TrySymAt(path, found)
       END;
       IF ~ok THEN
@@ -194,6 +303,10 @@ BEGIN
         ok := TrySymAt(path, found)
       END;
       INC(i)
+    END;
+    IF ~ok & (symDir[0] # 0X) THEN
+      AppendSymName(symDir, plain, path);
+      ok := TrySymAt(path, found)
     END;
     i := 0;
     WHILE ~ok & (i < nHomeRoots) DO
@@ -213,6 +326,14 @@ BEGIN
         END
       END;
       INC(i)
+    END;
+    IF ~ok THEN
+      AppendSymName('', plain, path);
+      ok := TrySymAt(path, found)
+    END;
+    IF ~ok THEN
+      AppendSymName('_Build/', plain, path);
+      ok := TrySymAt(path, found)
     END
   END;
   RETURN ok
@@ -740,7 +861,12 @@ BEGIN
   Out.String('  -L, --langs         List languages from .sym and exit'); Out.Ln;
   Out.String('  -a, --all           Translation comments for all sym languages'); Out.Ln;
   Out.String('  -t, --translate <codes>  Comments for listed langs; first = output'); Out.Ln;
-  Out.String('  -h, --help          This help'); Out.Ln
+  Out.String('  -H, --home <dir>    Install root (Lib/_Build/, Langs/); highest priority'); Out.Ln;
+  Out.String('  -h, --help          This help'); Out.Ln;
+  Out.Ln;
+  Out.String('Environment:'); Out.Ln;
+  Out.String('  INTEROBERON_ROOT  Colon-separated install roots (Lib/, Langs/).'); Out.Ln;
+  Out.String('                    CWD and the directory of showdef are also tried.'); Out.Ln
 END Usage;
 
 PROCEDURE RunModule(modArg: ARRAY OF CHAR): INTEGER;
@@ -796,6 +922,8 @@ END RunModule;
 
 PROCEDURE Main;
 VAR a, opt: ARRAY maxPath OF CHAR;
+  cliHomes: ARRAY maxHomeRoots, maxPath OF CHAR;
+  nCliHomes: INTEGER;
   i, n, code, c: INTEGER;
   done: BOOLEAN;
 BEGIN
@@ -806,7 +934,7 @@ BEGIN
   listLangsOnly := FALSE;
   nTransLangs := 0;
   nMods := 0;
-  InitHomeRoots;
+  nCliHomes := 0;
   n := Args.Count();
   i := 1;
   done := FALSE;
@@ -823,7 +951,14 @@ BEGIN
       IF i <= n THEN Args.Get(i, opt); ParseLangList(opt); INC(i) END
     ELSIF (a = '--dir') OR (a = '-d') THEN
       INC(i);
-      IF i <= n THEN Args.Get(i, symDir); INC(i) END
+      IF i <= n THEN Args.Get(i, symDir); NormalizeRoot(symDir); INC(i) END
+    ELSIF (a = '--home') OR (a = '-H') THEN
+      INC(i);
+      IF (i <= n) & (nCliHomes < maxHomeRoots) THEN
+        Args.Get(i, cliHomes[nCliHomes]);
+        INC(nCliHomes);
+        INC(i)
+      END
     ELSIF nMods < maxMods THEN
       Strings.Copy(a, modArgs[nMods]);
       INC(nMods);
@@ -836,6 +971,11 @@ BEGIN
   END;
   IF ~done & (nMods = 0) THEN Usage; code := 1; done := TRUE END;
   IF ~done THEN
+    BuildHomeRoots;
+    i := nCliHomes - 1;
+    WHILE i # -1 DO PrependHomeRoot(cliHomes[i]); DEC(i) END;
+    PublishLangRoots;
+    InitLibSymDir;
     i := 0;
     WHILE i < nMods DO
       c := RunModule(modArgs[i]);

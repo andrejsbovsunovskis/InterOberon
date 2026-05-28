@@ -303,6 +303,15 @@ if [ -x ./showdef ]; then
         echo "FAIL showdef-files-lv"
         FAIL=$((FAIL + 1))
     fi
+    SD="$(pwd)/showdef"
+    out=$(cd /tmp && "$SD" --lang ru Files 2>&1)
+    if echo "$out" | grep -q 'ЧитатьЦелое' && echo "$out" | grep -q 'Зарегистрировать'; then
+        echo "PASS showdef-lib-cwd-ru"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL showdef-lib-cwd-ru"
+        FAIL=$((FAIL + 1))
+    fi
 else
     echo "SKIP showdef-strings-i18n (not built)"
 fi

@@ -53,7 +53,7 @@ VAR
   sym: INTEGER;
 
   error*: BOOLEAN; (* FALSE if ok, TRUE if not started yet or on error *)
-  errPos: INTEGER; (* Position of last error *)
+  errPos: LONGINT; (* Position of last error *)
 
   (** Loaded strings **)
   errors: ARRAY 160, 80 OF CHAR; (** error message texts *)
@@ -83,7 +83,7 @@ END GetError;
 
 PROCEDURE Mark(errCode: INTEGER);
 VAR s: ARRAY 256 OF CHAR;
-  pos: INTEGER;
+  pos: LONGINT;
 BEGIN
   error := TRUE; pos := Files.Pos(r);
   IF pos > errPos + 4 THEN
@@ -176,7 +176,6 @@ BEGIN
       IF sym = eql THEN GetSymLn ELSE Mark(expEql) END;
       IF sym = string THEN
         Strings.Copy(sval, m[n]);
-        m[n, last] := 0X;
         GetSym
       ELSE Mark(expString)
       END

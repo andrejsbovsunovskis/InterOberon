@@ -12,8 +12,9 @@ CONST
   sysRead = 3;
   sysWrite = 4;
   sysUnlink = 10;
+  sysChdir = 12;
   sysLseek = 199;
-  sysFtruncate = 196;
+  sysFtruncate = 201;
   sysRename = 128;
   sysFstat = 345;
 
@@ -25,22 +26,28 @@ CONST
   seekCur = 1;
   seekEnd = 2;
 
+  statAtime = 80;
+  statMtime = 96;
+  statCtime = 112;
+  statBirth = 128;
+
 TYPE
-  File* = POINTER TO FileDesc;
-  Rider* = RECORD
-    eof*: BOOLEAN;
-    res*: INTEGER;
-    f: File;
-    pos: INTEGER
+  File* = POINTER TO FileDesc; (**%RU:Файл%LV:Fails*)
+  Rider* = RECORD (**%RU:Бегунок%LV:Bīdnis*)
+    eof*: BOOLEAN; (**%RU:конец%LV:beigas*)
+    res*: INTEGER; (**%RU:рез%LV:rez*)
+    f: File; (**%RU:ф*)
+    pos: LONGINT; (**%RU:поз%LV:poz*)
+    pending: CHAR (**%RU:ожидает%LV:gaida*)
   END;
 
-  FileDesc = RECORD
-    regName: ARRAY 256 OF CHAR;
-    fd: INTEGER;
-    len: INTEGER;
-    memLen: INTEGER;
-    memOnly: BOOLEAN;
-    mem: ARRAY maxMem OF BYTE
+  FileDesc = RECORD (**%RU:ОписьФайла%LV:FailaApr*)
+    regName: ARRAY 256 OF CHAR; (**%RU:регИмя%LV:regVārds*)
+    fd: INTEGER; (**%RU:фд%LV:fd*)
+    len: LONGINT; (**%RU:длина%LV:garums*)
+    memLen: INTEGER; (**%RU:длПам%LV:atmGar*)
+    memOnly: BOOLEAN; (**%RU:толькоПам%LV:tikaiAtm*)
+    mem: ARRAY maxMem OF BYTE (**%RU:память%LV:atmiņa*)
   END;
 
 PROCEDURE Halt(msg: ARRAY OF CHAR);
@@ -75,75 +82,114 @@ BEGIN
   IF used < LEN(q) THEN q[used] := 0 END
 RETURN used END PathUtf8;
 
-PROCEDURE SysOpen(name: ARRAY OF CHAR; flags: INTEGER): INTEGER;
+PROCEDURE NormRes(err: LONGINT): INTEGER;
+VAR r: INTEGER;
+BEGIN
+  IF err = 0 THEN r := 0
+  ELSIF err = 2 THEN r := 2
+  ELSE r := 1
+  END
+RETURN r END NormRes;
+
+PROCEDURE SysOpen(name: ARRAY OF CHAR; flags: INTEGER): LONGINT;
 VAR path: ARRAY 1024 OF BYTE; r: LONGINT;
 BEGIN
   IF PathUtf8(name, path) = 0 THEN r := invalidFd
   ELSE r := SYSTEM.SVC(sysOpen, SYSTEM.ADR(path), flags, fileMode)
   END
-RETURN SHORT(r) END SysOpen;
+RETURN r END SysOpen;
 
-PROCEDURE SysClose(fd: INTEGER): INTEGER;
+PROCEDURE SysClose(fd: INTEGER): LONGINT;
 RETURN SYSTEM.SVC(sysClose, fd, 0, 0) END SysClose;
 
-PROCEDURE SysRead(fd: INTEGER; VAR buf: ARRAY OF BYTE; n: INTEGER): INTEGER;
-VAR r: LONGINT;
-BEGIN r := SYSTEM.SVC(sysRead, fd, SYSTEM.ADR(buf), n)
-RETURN SHORT(r) END SysRead;
+PROCEDURE SysRead(fd: INTEGER; VAR buf: ARRAY OF BYTE; n: INTEGER): LONGINT;
+RETURN SYSTEM.SVC(sysRead, fd, SYSTEM.ADR(buf), n) END SysRead;
 
-PROCEDURE SysWrite(fd: INTEGER; buf: ARRAY OF BYTE; n: INTEGER): INTEGER;
-VAR r: LONGINT;
-BEGIN r := SYSTEM.SVC(sysWrite, fd, SYSTEM.ADR(buf), n)
-RETURN SHORT(r) END SysWrite;
+PROCEDURE SysWrite(fd: INTEGER; buf: ARRAY OF BYTE; n: INTEGER): LONGINT;
+RETURN SYSTEM.SVC(sysWrite, fd, SYSTEM.ADR(buf), n) END SysWrite;
 
-PROCEDURE SysUnlink(name: ARRAY OF CHAR): INTEGER;
+PROCEDURE SysUnlink(name: ARRAY OF CHAR): LONGINT;
 VAR path: ARRAY 1024 OF BYTE; r: LONGINT;
 BEGIN
   IF PathUtf8(name, path) = 0 THEN r := 1
   ELSE r := SYSTEM.SVC(sysUnlink, SYSTEM.ADR(path), 0, 0)
   END
-RETURN SHORT(r) END SysUnlink;
+RETURN r END SysUnlink;
 
-PROCEDURE SysRename(old, new: ARRAY OF CHAR): INTEGER;
+PROCEDURE SysRename(old, new: ARRAY OF CHAR): LONGINT;
 VAR p0, p1: ARRAY 1024 OF BYTE; r: LONGINT;
 BEGIN
   IF PathUtf8(old, p0) = 0 THEN r := 1
   ELSIF PathUtf8(new, p1) = 0 THEN r := 1
   ELSE r := SYSTEM.SVC(sysRename, SYSTEM.ADR(p0), SYSTEM.ADR(p1), 0)
   END
-RETURN SHORT(r) END SysRename;
+RETURN r END SysRename;
 
-PROCEDURE SysSeek(fd: INTEGER; pos: INTEGER): INTEGER;
-VAR r: LONGINT;
-BEGIN r := SYSTEM.SVC(sysLseek, fd, pos, seekSet)
-RETURN SHORT(r) END SysSeek;
+PROCEDURE SysSeek(fd: INTEGER; pos: LONGINT): LONGINT;
+RETURN SYSTEM.SVC(sysLseek, fd, pos, seekSet) END SysSeek;
 
-PROCEDURE SysTruncate(fd: INTEGER; pos: INTEGER): INTEGER;
-VAR r: LONGINT;
-BEGIN r := SYSTEM.SVC(sysFtruncate, fd, pos, 0)
-RETURN SHORT(r) END SysTruncate;
+PROCEDURE SysTruncate(fd: INTEGER; pos: LONGINT): LONGINT;
+VAR p: INTEGER;
+BEGIN
+  p := SHORT(pos);
+  RETURN SYSTEM.SVC(sysFtruncate, fd, p, 0)
+END SysTruncate;
 
-PROCEDURE FdLength(fd: INTEGER): INTEGER;
+PROCEDURE FdLength(fd: INTEGER): LONGINT;
 VAR cur, sz: LONGINT;
 BEGIN
   cur := SYSTEM.SVC(sysLseek, fd, 0, seekCur);
   sz := SYSTEM.SVC(sysLseek, fd, 0, seekEnd);
   IF cur >= 0 THEN IF SYSTEM.SVC(sysLseek, fd, cur, seekSet) = 0 THEN END END;
   IF sz < 0 THEN sz := 0 END
-RETURN SHORT(sz) END FdLength;
+RETURN sz END FdLength;
+
+PROCEDURE ReadSec(buf: ARRAY OF BYTE; off: INTEGER): LONGINT;
+RETURN ORD(buf[off]) + ORD(buf[off + 1]) * 100H + ORD(buf[off + 2]) * 10000H
+    + ORD(buf[off + 3]) * 1000000H + ORD(buf[off + 4]) * 100000000H
+    + ORD(buf[off + 5]) * 10000000000H + ORD(buf[off + 6]) * 1000000000000H
+    + ORD(buf[off + 7]) * 100000000000000H END ReadSec;
+
+PROCEDURE PackDate(sec: LONGINT): LONGINT;
+VAR z, era, doe, yoe, doy, moe: LONGINT;
+  y, mo, d, h, mi, s: INTEGER;
+BEGIN
+  s := SHORT(sec MOD 60); sec := sec DIV 60;
+  mi := SHORT(sec MOD 60); sec := sec DIV 60;
+  h := SHORT(sec MOD 24); z := sec DIV 24;
+  z := z + 719468;
+  era := z DIV 146097;
+  doe := z - era * 146097;
+  yoe := (doe - doe DIV 1460 + doe DIV 36524 - doe DIV 146096) DIV 365;
+  y := SHORT(yoe + era * 400);
+  doy := doe - (365 * yoe + yoe DIV 4 - yoe DIV 100 + yoe DIV 400);
+  moe := (5 * doy + 2) DIV 153;
+  d := SHORT(doy - (153 * moe + 2) DIV 5 + 1);
+  IF moe < 10 THEN mo := SHORT(moe + 3) ELSE mo := SHORT(moe - 9) END;
+  IF mo <= 2 THEN INC(y) END
+RETURN s + mi * 64 + h * 4096 + d * 20000H + mo * 400000H + (y MOD 100) * 4000000H END PackDate;
+
+PROCEDURE FstatSec(f: File; off: INTEGER): LONGINT;
+VAR buf: ARRAY 144 OF BYTE; sec: LONGINT;
+BEGIN
+  sec := 0;
+  IF (f # NIL) & ~f.memOnly & (f.fd # invalidFd) THEN
+    IF SYSTEM.SVC(sysFstat, f.fd, SYSTEM.ADR(buf), 0) = 0 THEN sec := ReadSec(buf, off) END
+  END
+RETURN sec END FstatSec;
 
 PROCEDURE OpenRegistered(f: File);
-VAR fd, n: INTEGER;
+VAR fd: INTEGER; n: LONGINT;
 BEGIN
   IF f.memOnly THEN
-    fd := SysOpen(f.regName, oRdWr + oCreat + oTrunc);
+    fd := SHORT(SysOpen(f.regName, oRdWr + oCreat + oTrunc));
     IF fd < 0 THEN Halt('Files.Register open') END;
     IF f.memLen > 0 THEN
       n := SysWrite(fd, f.mem, f.memLen);
       IF n # f.memLen THEN Halt('Files.Register write') END
     END;
     f.fd := fd;
-    f.len := f.memLen; (* memLen fits INTEGER *)
+    f.len := f.memLen;
     f.memLen := 0;
     f.memOnly := FALSE
   END
@@ -163,7 +209,7 @@ RETURN f END New;
 PROCEDURE Old*(name: ARRAY OF CHAR): File; (**%RU:Старый,имя%LV:Vecs,vārds*)
 VAR f: File; fd: INTEGER;
 BEGIN
-  fd := SysOpen(name, oRdWr);
+  fd := SHORT(SysOpen(name, oRdWr));
   IF fd < 0 THEN f := NIL
   ELSE
     NEW(f);
@@ -199,14 +245,51 @@ BEGIN
   END
 END Purge;
 
+PROCEDURE Truncate*(f: File; pos: LONGINT); (**%RU:Усечь,файл,поз%LV:Saspiest,fails,poz*)
+VAR i: INTEGER;
+BEGIN
+  IF f # NIL THEN
+    IF f.memOnly THEN
+      IF pos < f.len THEN
+        f.len := pos;
+        IF pos < f.memLen THEN f.memLen := SHORT(pos) END
+      ELSIF pos > f.len THEN
+        i := SHORT(f.len);
+        WHILE i # pos DO
+          IF i < maxMem THEN f.mem[i] := 0 END;
+          INC(i)
+        END;
+        f.len := pos;
+        IF pos <= maxMem THEN f.memLen := SHORT(pos) END
+      END
+    ELSIF f.fd # invalidFd THEN
+      IF SysTruncate(f.fd, pos) = 0 THEN END;
+      f.len := pos
+    END
+  END
+END Truncate;
+
 PROCEDURE Delete*(name: ARRAY OF CHAR; VAR res: INTEGER); (**%RU:Удалить,имя,рез%LV:Dzēst,vārds,rez*)
-BEGIN res := SysUnlink(name) END Delete;
+BEGIN res := NormRes(SysUnlink(name)) END Delete;
 
 PROCEDURE Rename*(old, new: ARRAY OF CHAR; VAR res: INTEGER); (**%RU:Переименовать,стар,нов,рез%LV:Pārdēvēt,vecs,jauns,rez*)
-BEGIN res := SysRename(old, new) END Rename;
+BEGIN res := NormRes(SysRename(old, new)) END Rename;
 
-PROCEDURE Length*(f: File): INTEGER; (**%RU:Длина,файл%LV:Garums,fails*)
-VAR n: INTEGER;
+PROCEDURE ChangeDirectory*(path: ARRAY OF CHAR; VAR res: INTEGER); (**%RU:СменитьКаталог,путь,рез%LV:MainītKatalogu,ceļš,rez*)
+VAR q: ARRAY 1024 OF BYTE;
+BEGIN
+  IF PathUtf8(path, q) = 0 THEN res := 1
+  ELSE res := NormRes(SYSTEM.SVC(sysChdir, SYSTEM.ADR(q), 0, 0))
+  END
+END ChangeDirectory;
+
+PROCEDURE GetName*(f: File; VAR name: ARRAY OF CHAR); (**%RU:Имя,файл,буф%LV:Vārds,fails,buf*)
+BEGIN
+  IF f = NIL THEN name[0] := 0X ELSE CopyName(f.regName, name) END
+END GetName;
+
+PROCEDURE Length*(f: File): LONGINT; (**%RU:Длина,файл%LV:Garums,fails*)
+VAR n: LONGINT;
 BEGIN
   IF f = NIL THEN n := 0
   ELSIF f.memOnly THEN n := f.len
@@ -214,52 +297,58 @@ BEGIN
   END
 RETURN n END Length;
 
-PROCEDURE ModTime*(name: ARRAY OF CHAR): INTEGER; (**%RU:ВремяМод,имя%LV:ModLaiks,vārds*)
+PROCEDURE Date*(f: File): LONGINT; (**%RU:ДатаСоздания,файл%LV:IzveidesDatums,fails*)
+RETURN PackDate(FstatSec(f, statBirth)) END Date;
+
+PROCEDURE DateModified*(f: File): LONGINT; (**%RU:ДатаИзмен,файл%LV:ModificDatums,fails*)
+RETURN PackDate(FstatSec(f, statMtime)) END DateModified;
+
+PROCEDURE DateAccessed*(f: File): LONGINT; (**%RU:ДатаДоступа,файл%LV:PiekļuvesDatums,fails*)
+RETURN PackDate(FstatSec(f, statAtime)) END DateAccessed;
+
+PROCEDURE DateChanged*(f: File): LONGINT; (**%RU:ДатаСтатуса,файл%LV:StatusaDatums,fails*)
+RETURN PackDate(FstatSec(f, statCtime)) END DateChanged;
+
+PROCEDURE ModTime*(name: ARRAY OF CHAR): LONGINT; (**%RU:ВремяМод,имя%LV:ModLaiks,vārds*)
 VAR fd: INTEGER;
   buf: ARRAY 144 OF BYTE;
-  r: LONGINT;
-  t: INTEGER;
+  t: LONGINT;
 BEGIN
   t := 0;
-  fd := SysOpen(name, 0);
+  fd := SHORT(SysOpen(name, 0));
   IF fd >= 0 THEN
-    r := SYSTEM.SVC(sysFstat, fd, SYSTEM.ADR(buf), 0);
-    IF r = 0 THEN
-      t := buf[48] + buf[49] * 100H + buf[50] * 10000H + buf[51] * 1000000H
-    END;
+    IF SYSTEM.SVC(sysFstat, fd, SYSTEM.ADR(buf), 0) = 0 THEN t := ReadSec(buf, statMtime) END;
     IF SysClose(fd) = 0 THEN END
   END
 RETURN t END ModTime;
 
-PROCEDURE GetDate*(f: File; VAR t, d: INTEGER); (**%RU:Дата,файл,время,дата%LV:Datums,fails,laiks,datums*)
+PROCEDURE GetDate*(f: File; VAR t, d: LONGINT); (**%RU:Дата,файл,время,дата%LV:Datums,fails,laiks,datums*)
 BEGIN
-  IF f = NIL THEN t := 0
-  ELSE t := ModTime(f.regName)
-  END;
-  d := 0
+  IF f = NIL THEN t := 0 ELSE t := FstatSec(f, statMtime) END;
+  d := PackDate(t)
 END GetDate;
 
-PROCEDURE Set*(VAR r: Rider; f: File; pos: INTEGER); (**%RU:Установить,райдер,файл,поз%LV:Iestatīt,jātnieks,fails,poz*)
+PROCEDURE Set*(VAR r: Rider; f: File; pos: LONGINT); (**%RU:Установить,райдер,файл,поз%LV:Iestatīt,jātnieks,fails,poz*)
 BEGIN
-  r.f := f; r.pos := pos; r.eof := FALSE; r.res := 0;
+  r.f := f; r.pos := pos; r.eof := FALSE; r.res := 0; r.pending := 0X;
   IF (f # NIL) & (pos > f.len) THEN r.pos := f.len END;
   IF (f # NIL) & ~f.memOnly & (f.fd # invalidFd) THEN
     IF SysSeek(f.fd, r.pos) = r.pos THEN END
   END
 END Set;
 
-PROCEDURE Pos*(VAR r: Rider): INTEGER; (**%RU:Позиция,райдер%LV:Pozīcija,jātnieks*)
+PROCEDURE Pos*(VAR r: Rider): LONGINT; (**%RU:Позиция,райдер%LV:Pozīcija,jātnieks*)
 RETURN r.pos END Pos;
 
 PROCEDURE Base*(VAR r: Rider): File; (**%RU:База,райдер%LV:Bāze,jātnieks*)
 RETURN r.f END Base;
 
-PROCEDURE ReadByte(f: File; pos: INTEGER; VAR b: BYTE; VAR ok: BOOLEAN);
-VAR n: INTEGER; i: INTEGER; buf: ARRAY 1 OF BYTE;
+PROCEDURE ReadAt(f: File; pos: LONGINT; VAR b: BYTE; VAR ok: BOOLEAN);
+VAR n: LONGINT; i: INTEGER; buf: ARRAY 1 OF BYTE;
 BEGIN
   ok := FALSE;
   IF f.memOnly THEN
-    i := pos;
+    i := SHORT(pos);
     IF (i >= 0) & (i < f.memLen) THEN b := f.mem[i]; ok := TRUE END
   ELSIF f.fd # invalidFd THEN
     IF pos >= f.len THEN ok := FALSE
@@ -268,13 +357,13 @@ BEGIN
       IF n = 1 THEN b := buf[0]; ok := TRUE ELSE ok := FALSE END
     END
   END
-END ReadByte;
+END ReadAt;
 
-PROCEDURE WriteByte(f: File; pos: INTEGER; b: BYTE);
-VAR n: INTEGER; i: INTEGER; buf: ARRAY 1 OF BYTE;
+PROCEDURE WriteAt(f: File; pos: LONGINT; b: BYTE);
+VAR n: LONGINT; i: INTEGER; buf: ARRAY 1 OF BYTE;
 BEGIN
   IF f.memOnly THEN
-    i := pos;
+    i := SHORT(pos);
     IF (i >= 0) & (i < maxMem) THEN
       f.mem[i] := b;
       IF i + 1 > f.memLen THEN f.memLen := i + 1 END;
@@ -289,113 +378,195 @@ BEGIN
       END
     END
   END
-END WriteByte;
+END WriteAt;
 
 PROCEDURE Read*(VAR r: Rider; VAR x: BYTE); (**%RU:Читать,райдер,байт%LV:Lasīt,jātnieks,baits*)
 VAR ok: BOOLEAN;
 BEGIN
-  ReadByte(r.f, r.pos, x, ok);
+  ReadAt(r.f, r.pos, x, ok);
   IF ok THEN INC(r.pos) ELSE x := 0; r.eof := TRUE END
 END Read;
 
-PROCEDURE ReadChar*(VAR r: Rider; VAR x: CHAR); (**%RU:ЧитатьСимвол,райдер,символ%LV:LasītZīmi,jātnieks,zīme*)
-VAR b: BYTE; y: INTEGER;
-BEGIN
-  Read(r, b); y := b;
-  IF y > 80H THEN
-    Read(r, b); b := b MOD 64;
-    IF y DIV 32 = 6 THEN y := y MOD 32 * 64 + b
-    ELSIF y DIV 16 = 14 THEN
-      y := (y MOD 16 * 64 + b) * 64;
-      Read(r, b); INC(y, b MOD 64)
-    ELSIF y DIV 8 = 30 THEN
-      y := (y MOD 8 * 64 + b) * 64;
-      Read(r, b); y := (y + b MOD 64) * 64;
-      Read(r, b); INC(y, b MOD 64)
-    ELSE y := 0
-    END
-  END;
-  x := CHR(y)
-END ReadChar;
-
 PROCEDURE Write*(VAR r: Rider; x: BYTE); (**%RU:Писать,райдер,байт%LV:Rakstīt,jātnieks,baits*)
 BEGIN
-  WriteByte(r.f, r.pos, x);
+  WriteAt(r.f, r.pos, x);
   INC(r.pos);
   IF r.pos > r.f.len THEN r.f.len := r.pos END;
   r.eof := FALSE; r.res := 0
 END Write;
 
-PROCEDURE ReadBytes*(VAR r: Rider; VAR x: ARRAY OF BYTE; n: INTEGER); (**%RU:ЧитатьБайты,райдер,буф,число%LV:LasītBaitus,jātnieks,buf,skaits*)
+PROCEDURE ReadBytes*(VAR r: Rider; VAR x: ARRAY OF BYTE; offset, len: INTEGER): INTEGER; (**%RU:ЧитатьБайты,райдер,буф,смещ,длина%LV:LasītBaitus,jātnieks,buf,poz,garums*)
 VAR i, got, remain: INTEGER; b: BYTE; ok: BOOLEAN;
 BEGIN
-  IF n > LEN(x) THEN n := LEN(x) END;
-  remain := n; i := 0; got := 0;
+  got := 0; remain := len; i := 0;
   WHILE i # remain DO
-    ReadByte(r.f, r.pos, b, ok);
-    IF ok THEN x[i] := b; INC(i); INC(r.pos); INC(got)
-    ELSE r.res := remain - got; r.eof := TRUE; i := remain
+    ReadAt(r.f, r.pos, b, ok);
+    IF ok THEN
+      IF (offset + i >= 0) & (offset + i < LEN(x)) THEN x[offset + i] := b END;
+      INC(r.pos); INC(got); INC(i)
+    ELSE r.eof := TRUE; i := remain
     END
   END;
-  IF got = remain THEN r.res := 0; r.eof := FALSE END
-END ReadBytes;
+  IF got # len THEN r.res := len - got ELSE r.res := 0 END
+RETURN got END ReadBytes;
 
-PROCEDURE WriteBytes*(VAR r: Rider; x: ARRAY OF BYTE; n: INTEGER);
-VAR i, remain: INTEGER;
+PROCEDURE WriteBytes*(VAR r: Rider; x: ARRAY OF BYTE; offset, len: INTEGER): INTEGER; (**%RU:ПисатьБайты,райдер,буф,смещ,длина%LV:RakstītBaitus,jātnieks,buf,poz,garums*)
+VAR i, remain, wrote: INTEGER;
 BEGIN
-  IF n > LEN(x) THEN n := LEN(x) END;
-  remain := n; i := 0;
+  remain := len; i := 0; wrote := 0;
   WHILE i # remain DO
-    WriteByte(r.f, r.pos, x[i]);
-    INC(r.pos); INC(i)
+    IF (offset + i >= 0) & (offset + i < LEN(x)) THEN
+      WriteAt(r.f, r.pos, x[offset + i]);
+      INC(r.pos); INC(wrote)
+    END;
+    INC(i)
   END;
   IF r.pos > r.f.len THEN r.f.len := r.pos END;
   r.res := 0
-END WriteBytes;
+RETURN wrote END WriteBytes;
+
+PROCEDURE RdBytes(VAR r: Rider; VAR x: ARRAY OF BYTE; offset, len: INTEGER);
+VAR n: INTEGER;
+BEGIN n := ReadBytes(r, x, offset, len) END RdBytes;
+
+PROCEDURE WrBytes(VAR r: Rider; x: ARRAY OF BYTE; offset, len: INTEGER);
+VAR n: INTEGER;
+BEGIN n := WriteBytes(r, x, offset, len) END WrBytes;
 
 PROCEDURE ReadInt*(VAR r: Rider; VAR x: INTEGER); (**%RU:ЧитатьЦелое,райдер,знач%LV:LasītVesels,jātnieks,vērt*)
-VAR b: ARRAY 2 OF BYTE;
-BEGIN ReadBytes(r, b, 2);
-  x := b[0] + b[1] * 100H;
-  IF x >= 8000H THEN x := x - 10000H END
+VAR b: ARRAY 4 OF BYTE;
+BEGIN
+  RdBytes(r, b, 0, 4);
+  x := b[0] + b[1] * 100H + b[2] * 10000H + b[3] * 1000000H;
+  IF x >= 80000000H THEN x := x - 100000000H END
 END ReadInt;
 
 PROCEDURE WriteInt*(VAR r: Rider; x: INTEGER); (**%RU:ПисатьЦелое,райдер,знач%LV:RakstītVesels,jātnieks,vērt*)
-VAR b: ARRAY 2 OF BYTE;
+VAR b: ARRAY 4 OF BYTE;
 BEGIN
   b[0] := x MOD 100H; b[1] := x DIV 100H MOD 100H;
-  WriteBytes(r, b, 2)
+  b[2] := x DIV 10000H MOD 100H; b[3] := x DIV 1000000H MOD 100H;
+  WrBytes(r, b, 0, 4)
 END WriteInt;
 
-PROCEDURE ReadLInt*(VAR r: Rider; VAR x: INTEGER); (**%RU:ЧитатьДлинЦелое,райдер,знач%LV:LasītGarVesels,jātnieks,vērt*)
-BEGIN ReadInt(r, x) END ReadLInt;
+PROCEDURE ReadShortInt*(VAR r: Rider; VAR x: SHORTINT); (**%RU:ЧитатьКорЦелое,райдер,знач%LV:LasītĪssVesels,jātnieks,vērt*)
+VAR b: ARRAY 2 OF BYTE; i: INTEGER;
+BEGIN
+  RdBytes(r, b, 0, 2);
+  i := b[0] + b[1] * 100H;
+  IF i >= 8000H THEN i := i - 10000H END;
+  x := SHORT(i)
+END ReadShortInt;
 
-PROCEDURE WriteLInt*(VAR r: Rider; x: INTEGER); (**%RU:ПисатьДлинЦелое,райдер,знач%LV:RakstītGarVesels,jātnieks,vērt*)
-BEGIN WriteInt(r, x) END WriteLInt;
+PROCEDURE WriteShortInt*(VAR r: Rider; x: SHORTINT); (**%RU:ПисатьКорЦелое,райдер,знач%LV:RakstītĪssVesels,jātnieks,vērt*)
+VAR b: ARRAY 2 OF BYTE; i: INTEGER;
+BEGIN
+  i := x;
+  b[0] := i MOD 100H; b[1] := i DIV 100H MOD 100H;
+  WrBytes(r, b, 0, 2)
+END WriteShortInt;
 
-PROCEDURE ReadSet*(VAR r: Rider; VAR x: SET); (**%RU:ЧитатьМнож,райдер,знач%LV:LasītKopa,jātnieks,vērt*)
-VAR b: ARRAY 4 OF BYTE; bits, j: INTEGER;
-BEGIN ReadBytes(r, b, 4);
-  bits := b[0] + b[1] * 100H + b[2] * 10000H + b[3] * 1000000H;
+PROCEDURE ReadLInt*(VAR r: Rider; VAR x: LONGINT); (**%RU:ЧитатьДлинЦелое,райдер,знач%LV:LasītGarVesels,jātnieks,vērt*)
+VAR b: ARRAY 8 OF BYTE; u: LONGINT; i: INTEGER;
+BEGIN
+  RdBytes(r, b, 0, 8);
+  u := 0; i := 0;
+  WHILE i # 8 DO
+    u := u * 100H + b[i];
+    INC(i)
+  END;
+  x := u
+END ReadLInt;
+
+PROCEDURE WriteLInt*(VAR r: Rider; x: LONGINT); (**%RU:ПисатьДлинЦелое,райдер,знач%LV:RakstītGarVesels,jātnieks,vērt*)
+VAR b: ARRAY 8 OF BYTE; u: LONGINT; i: INTEGER;
+BEGIN
+  u := x; i := 7;
+  WHILE i # -1 DO
+    b[i] := SHORT(u MOD 100H);
+    u := u DIV 100H;
+    DEC(i)
+  END;
+  WrBytes(r, b, 0, 8)
+END WriteLInt;
+
+PROCEDURE SetBits(VAR x: SET; bits, n: INTEGER);
+VAR j: INTEGER;
+BEGIN
   x := {}; j := 0;
-  WHILE j # 32 DO
+  WHILE j # n DO
     IF bits DIV LSL(1, j) MOD 2 # 0 THEN INCL(x, j) END;
     INC(j)
   END
+END SetBits;
+
+PROCEDURE GetBits(x: SET; n: INTEGER): INTEGER;
+VAR bits, j: INTEGER;
+BEGIN
+  bits := 0; j := 0;
+  WHILE j # n DO
+    IF j IN x THEN INC(bits, LSL(1, j)) END;
+    INC(j)
+  END
+RETURN bits END GetBits;
+
+PROCEDURE ReadTinySet*(VAR r: Rider; VAR x: SET); (**%RU:ЧитатьМикроМнож,райдер,знач%LV:LasītMikroKopa,jātnieks,vērt*)
+VAR b: BYTE;
+BEGIN Read(r, b); SetBits(x, ORD(b), 8) END ReadTinySet;
+
+PROCEDURE WriteTinySet*(VAR r: Rider; x: SET); (**%RU:ПисатьМикроМнож,райдер,знач%LV:RakstītMikroKopa,jātnieks,vērt*)
+BEGIN Write(r, SHORT(GetBits(x, 8))) END WriteTinySet;
+
+PROCEDURE ReadShortSet*(VAR r: Rider; VAR x: SET); (**%RU:ЧитатьКорМнож,райдер,знач%LV:LasītĪsaKopa,jātnieks,vērt*)
+VAR b: ARRAY 2 OF BYTE; bits: INTEGER;
+BEGIN
+  RdBytes(r, b, 0, 2);
+  bits := b[0] + b[1] * 100H;
+  SetBits(x, bits, 16)
+END ReadShortSet;
+
+PROCEDURE WriteShortSet*(VAR r: Rider; x: SET); (**%RU:ПисатьКорМнож,райдер,знач%LV:RakstītĪsaKopa,jātnieks,vērt*)
+VAR b: ARRAY 2 OF BYTE; bits: INTEGER;
+BEGIN
+  bits := GetBits(x, 16);
+  b[0] := SHORT(bits MOD 100H); b[1] := SHORT(bits DIV 100H MOD 100H);
+  WrBytes(r, b, 0, 2)
+END WriteShortSet;
+
+PROCEDURE ReadSet*(VAR r: Rider; VAR x: SET); (**%RU:ЧитатьМнож,райдер,знач%LV:LasītKopa,jātnieks,vērt*)
+VAR b: ARRAY 4 OF BYTE; bits: INTEGER;
+BEGIN
+  RdBytes(r, b, 0, 4);
+  bits := b[0] + b[1] * 100H + b[2] * 10000H + b[3] * 1000000H;
+  SetBits(x, bits, 32)
 END ReadSet;
 
 PROCEDURE WriteSet*(VAR r: Rider; x: SET); (**%RU:ПисатьМнож,райдер,знач%LV:RakstītKopa,jātnieks,vērt*)
-VAR b: ARRAY 4 OF BYTE; bits, j: INTEGER;
+VAR b: ARRAY 4 OF BYTE; bits: INTEGER;
 BEGIN
-  bits := 0; j := 0;
-  WHILE j # 32 DO
-    IF j IN x THEN INC(bits, LSL(1, j)) END;
-    INC(j)
-  END;
-  b[0] := bits MOD 100H; b[1] := bits DIV 100H MOD 100H;
-  b[2] := bits DIV 10000H MOD 100H; b[3] := bits DIV 1000000H MOD 100H;
-  WriteBytes(r, b, 4)
+  bits := GetBits(x, 32);
+  b[0] := SHORT(bits MOD 100H); b[1] := SHORT(bits DIV 100H MOD 100H);
+  b[2] := SHORT(bits DIV 10000H MOD 100H); b[3] := SHORT(bits DIV 1000000H MOD 100H);
+  WrBytes(r, b, 0, 4)
 END WriteSet;
+
+PROCEDURE ReadLongSet*(VAR r: Rider; VAR x: SET); (**%RU:ЧитатьДлинМнож,райдер,знач%LV:LasītGarKopa,jātnieks,vērt*)
+VAR b: ARRAY 8 OF BYTE; bits: INTEGER;
+BEGIN
+  RdBytes(r, b, 0, 8);
+  bits := b[0] + b[1] * 100H + b[2] * 10000H + b[3] * 1000000H;
+  SetBits(x, bits, 32)
+END ReadLongSet;
+
+PROCEDURE WriteLongSet*(VAR r: Rider; x: SET); (**%RU:ПисатьДлинМнож,райдер,знач%LV:RakstītGarKopa,jātnieks,vērt*)
+VAR b: ARRAY 8 OF BYTE; bits: INTEGER; i: INTEGER;
+BEGIN
+  bits := GetBits(x, 32); i := 0;
+  WHILE i # 8 DO b[i] := 0; INC(i) END;
+  b[0] := SHORT(bits MOD 100H); b[1] := SHORT(bits DIV 100H MOD 100H);
+  b[2] := SHORT(bits DIV 10000H MOD 100H); b[3] := SHORT(bits DIV 1000000H MOD 100H);
+  WrBytes(r, b, 0, 8)
+END WriteLongSet;
 
 PROCEDURE ReadBool*(VAR r: Rider; VAR x: BOOLEAN); (**%RU:ЧитатьЛог,райдер,знач%LV:LasītLoģ,jātnieks,vērt*)
 VAR b: BYTE;
@@ -407,7 +578,7 @@ BEGIN Write(r, ORD(x)) END WriteBool;
 PROCEDURE ReadReal*(VAR r: Rider; VAR x: REAL); (**%RU:ЧитатьВещ,райдер,знач%LV:LasītReāls,jātnieks,vērt*)
 VAR b: ARRAY 4 OF BYTE; u: INTEGER;
 BEGIN
-  ReadBytes(r, b, 4);
+  RdBytes(r, b, 0, 4);
   u := b[0] + b[1] * 100H + b[2] * 10000H + b[3] * 1000000H;
   x := SYSTEM.VAL(REAL, u)
 END ReadReal;
@@ -418,13 +589,13 @@ BEGIN
   u := SYSTEM.VAL(INTEGER, x);
   b[0] := u MOD 100H; b[1] := u DIV 100H MOD 100H;
   b[2] := u DIV 10000H MOD 100H; b[3] := u DIV 1000000H MOD 100H;
-  WriteBytes(r, b, 4)
+  WrBytes(r, b, 0, 4)
 END WriteReal;
 
 PROCEDURE ReadLReal*(VAR r: Rider; VAR x: LONGREAL); (**%RU:ЧитатьДлинВещ,райдер,знач%LV:LasītGarReāls,jātnieks,vērt*)
 VAR b: ARRAY 8 OF BYTE; u: LONGINT; i: INTEGER;
 BEGIN
-  ReadBytes(r, b, 8);
+  RdBytes(r, b, 0, 8);
   u := 0; i := 0;
   WHILE i # 8 DO
     u := u * 100H + b[i];
@@ -439,57 +610,101 @@ BEGIN
   u := SYSTEM.VAL(LONGINT, x);
   i := 7;
   WHILE i # -1 DO
-    b[i] := u MOD 100H;
+    b[i] := SHORT(u MOD 100H);
     u := u DIV 100H;
     DEC(i)
   END;
-  WriteBytes(r, b, 8)
+  WrBytes(r, b, 0, 8)
 END WriteLReal;
 
-PROCEDURE ReadString*(VAR r: Rider; VAR x: ARRAY OF CHAR); (**%RU:ЧитатьСтроку,райдер,приёмник%LV:LasītVirkni,jātnieks,mērķis*)
-VAR i: INTEGER; lo, hi: BYTE; ch: CHAR;
+PROCEDURE ReadChar*(VAR r: Rider; VAR x: CHAR); (**%RU:ЧитатьСимвол,райдер,символ%LV:LasītZīmi,jātnieks,zīme*)
+VAR buf: ARRAY 8 OF BYTE; n, need, i: INTEGER; hi, lo: CHAR; ok, fail: BOOLEAN;
 BEGIN
-  i := 0;
-  WHILE ~r.eof DO
-    IF (r.f # NIL) & (r.pos >= r.f.len) THEN r.eof := TRUE
-    ELSE
-      Read(r, lo);
-      IF ~r.eof THEN
-        Read(r, hi);
-        IF r.eof THEN hi := 0 END;
-        ch := CHR(ORD(lo) + ORD(hi) * 100H);
-        IF i < LEN(x) THEN x[i] := ch; INC(i) END;
-        IF ch = 0X THEN r.eof := TRUE END
+  x := 0X; fail := FALSE;
+  IF r.pending # 0X THEN x := r.pending; r.pending := 0X
+  ELSE
+    n := 0; need := 1;
+    WHILE (n # need) & ~fail DO
+      ReadAt(r.f, r.pos + n, buf[n], ok);
+      IF ~ok THEN r.eof := TRUE; fail := TRUE
+      ELSE
+        IF n = 0 THEN need := Utf8.SeqLen(buf[n]) END;
+        INC(n)
+      END
+    END;
+    IF ~fail THEN
+      i := Utf8.DecodeCharEx(buf, 0, hi, lo);
+      IF i <= 0 THEN x := Utf8.replacementChar
+      ELSE
+        r.pos := r.pos + i;
+        IF lo # 0X THEN r.pending := lo END;
+        x := hi
       END
     END
+  END
+END ReadChar;
+
+PROCEDURE WriteChar*(VAR r: Rider; x: CHAR); (**%RU:ПисатьСимвол,райдер,символ%LV:RakstītZīmi,jātnieks,zīme*)
+VAR buf: ARRAY 4 OF BYTE; n, i: INTEGER;
+BEGIN
+  n := Utf8.EncodeChar(x, buf, 0);
+  IF n > 0 THEN
+    i := 0;
+    WHILE i # n DO Write(r, buf[i]); INC(i) END
+  END
+END WriteChar;
+
+PROCEDURE ReadString*(VAR r: Rider; VAR x: ARRAY OF CHAR); (**%RU:ЧитатьСтроку,райдер,приёмник%LV:LasītVirkni,jātnieks,mērķis*)
+VAR buf: ARRAY maxMem OF BYTE; n, used: INTEGER; b: BYTE; stop: BOOLEAN;
+BEGIN
+  n := 0; stop := FALSE;
+  WHILE (n # LEN(buf) - 1) & ~r.eof & ~stop DO
+    Read(r, b);
+    IF r.eof THEN stop := TRUE
+    ELSE
+      buf[n] := b; INC(n);
+      IF b = 0 THEN stop := TRUE END
+    END
   END;
-  IF i < LEN(x) THEN x[i] := 0X ELSE x[LEN(x) - 1] := 0X END
+  used := Utf8.Decode(buf, 0, n, x, 0, LEN(x) - 1);
+  IF used < 0 THEN x[0] := 0X END
 END ReadString;
 
 PROCEDURE WriteString*(VAR r: Rider; x: ARRAY OF CHAR); (**%RU:ПисатьСтроку,райдер,источник%LV:RakstītVirkni,jātnieks,avots*)
-VAR i: INTEGER; lo, hi: BYTE;
+VAR buf: ARRAY 512 OF BYTE; n, used: INTEGER;
 BEGIN
-  i := 0;
-  WHILE (i # LEN(x)) & (x[i] # 0X) DO
-    lo := ORD(x[i]) MOD 100H; hi := ORD(x[i]) DIV 100H MOD 100H;
-    Write(r, lo); Write(r, hi); INC(i)
-  END;
-  Write(r, 0); Write(r, 0)
+  n := 0;
+  WHILE (n # LEN(x)) & (x[n] # 0X) DO INC(n) END;
+  used := Utf8.Encode(x, 0, n, buf, 0, LEN(buf) - 1);
+  IF used > 0 THEN WrBytes(r, buf, 0, used) END;
+  Write(r, 0)
 END WriteString;
 
-PROCEDURE ReadNum*(VAR r: Rider; VAR x: INTEGER); (**%RU:ЧитатьЧисло,райдер,знач%LV:LasītSkaitlis,jātnieks,vērt*)
-VAR ch: BYTE; u: INTEGER;
+PROCEDURE ReadNum*(VAR r: Rider; VAR x: LONGINT); (**%RU:ЧитатьЧисло,райдер,знач%LV:LasītSkaitlis,jātnieks,vērt*)
+VAR n, i, part: INTEGER; b: BYTE; v: LONGINT;
 BEGIN
-  Read(r, ch);
-  u := ORD(ch);
-  IF u >= 64 THEN x := -(u - 64) ELSE x := u END
+  n := 0; v := 0; Read(r, b);
+  WHILE b >= 128 DO
+    part := ORD(b) - 128; i := 0;
+    WHILE i # n DO part := part * 2; INC(i) END;
+    v := v + part;
+    INC(n, 7); Read(r, b)
+  END;
+  part := ORD(b) MOD 64 - ORD(b) DIV 64 * 64; i := 0;
+  WHILE i # n DO part := part * 2; INC(i) END;
+  v := v + part;
+  x := v
 END ReadNum;
 
-PROCEDURE WriteNum*(VAR r: Rider; x: INTEGER); (**%RU:ПисатьЧисло,райдер,знач%LV:RakstītSkaitlis,jātnieks,vērt*)
+PROCEDURE WriteNum*(VAR r: Rider; x: LONGINT); (**%RU:ПисатьЧисло,райдер,знач%LV:RakstītSkaitlis,jātnieks,vērt*)
+VAR sx: INTEGER; done: BOOLEAN;
 BEGIN
-  IF (x >= -64) & (x <= 63) THEN
-    IF x < 0 THEN Write(r, (-x) + 64) ELSE Write(r, x) END
-  ELSE Halt('Files.WriteNum range')
+  done := FALSE;
+  WHILE ~done DO
+    sx := SHORT(x);
+    IF (x = sx) & (sx >= -64) & (sx <= 63) THEN Write(r, SHORT(x MOD 128)); done := TRUE
+    ELSE Write(r, SHORT(x MOD 128 + 128)); x := x DIV 128
+    END
   END
 END WriteNum;
 
