@@ -187,3 +187,5 @@ ADRINT=ADRINT
 24=Moduļa interfeisa kontrolsumma nesakrīt (pārkompilējiet atkarības)
 25=Eksportētais tips ir pārāk sarežģīts simbolu datnei
 26=ir aktuāls.
+27=Modulī
+28=nav komandas

@@ -187,3 +187,5 @@ ADRINT=ADRINT
 24=Module interface hash mismatch (recompile dependencies)
 25=Exported type too complex for symbol file
 26=is up to date.
+27=In module
+28=has no command

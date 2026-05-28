@@ -742,8 +742,9 @@ BEGIN
   END
 RETURN ok END ParseCmdSpec;
 
-(** Returns TRUE if name "looks like" a Mod.Proc spec (capital identifier with
-    one '.' separating two identifiers).  Used to detect single-token form. *)
+(** Returns TRUE if name "looks like" a Mod.Proc spec (one '.' after the last
+    path separator, with non-empty module and procedure names).  Used to detect
+    single-token form, including translated identifiers. *)
 PROCEDURE LooksLikeQualified(s: ARRAY OF CHAR): BOOLEAN;
 VAR i, lastSlash, lastDot: INTEGER;
   ok: BOOLEAN;
@@ -755,10 +756,7 @@ BEGIN
     END;
     INC(i)
   END;
-  ok := (lastDot > lastSlash + 1) & (lastDot > 0);
-  IF ok THEN
-    IF (s[lastDot + 1] < 'A') OR (s[lastDot + 1] > 'Z') THEN ok := FALSE END
-  END
+  ok := (lastDot > lastSlash + 1) & (s[lastDot + 1] # 0X)
 RETURN ok END LooksLikeQualified;
 
 (** Resolves the current cmdMod/cmdProc against the discovered module set.
@@ -939,7 +937,7 @@ RETURN res END LinkOnly;
 
 PROCEDURE Main;
 VAR a, opt: ARRAY 256 OF CHAR;
-  code, i, n: INTEGER;
+  code, i, n, nMatches: INTEGER;
   noLink, helped, gotRoot, gotCmd, done: BOOLEAN;
   positional: ARRAY 4, 256 OF CHAR;
   nPos: INTEGER;
@@ -1006,6 +1004,11 @@ BEGIN
           Strings.Copy(cmdMod, rootArg);
           SplitPath(cmdMod, opt, a);
           Strings.Copy(a, cmdMod);
+          IF TryExts(opt, a, rootArg, nMatches) THEN
+            IF (nMatches > 1) & ~noExtWarn THEN M.WriteErrorS(E.multipleExt, rootArg) END
+          ELSE
+            M.WriteErrorS(E.fileNotFound, rootArg); code := 1
+          END;
           gotRoot := TRUE; gotCmd := TRUE
         END
       ELSE

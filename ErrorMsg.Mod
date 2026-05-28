@@ -109,5 +109,7 @@ CONST
   symHashMismatch*   = 24;
   exportTooDeep*     = 25;
   compileSkip*       = 26;
+  inModule*          = 27;
+  hasNoCommand*      = 28;
 
 END ErrorMsg.

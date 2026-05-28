@@ -98,6 +98,20 @@ BEGIN
   Out.String(' "'); Out.String(s); Out.String('".'); Out.Ln
 END WriteErrorS;
 
+(** Outputs compiler error with module and command names. *)
+PROCEDURE WriteErrorCommand*(msg: INTEGER; modName, procName: ARRAY OF CHAR);
+VAR t, inMod, hasNo: ARRAY 80 OF CHAR;
+BEGIN
+  Lang.GetCompilerText(msg, t);
+  Lang.GetCompilerText(27, inMod);
+  Lang.GetCompilerText(28, hasNo);
+  Out.String('error: #'); Out.Int(msg, 0);
+  Out.Char(' '); Out.String(t); Out.String('. ');
+  Out.String(inMod); Out.String(' "'); Out.String(modName);
+  Out.String('" '); Out.String(hasNo); Out.String(' "');
+  Out.String(procName); Out.String('".'); Out.Ln
+END WriteErrorCommand;
+
 (** Outputs compiler error with an integer parameter: error: #N text n. *)
 PROCEDURE WriteErrorI*(msg, n: INTEGER);
 VAR s: ARRAY 80 OF CHAR;

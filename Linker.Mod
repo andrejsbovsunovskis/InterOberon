@@ -991,7 +991,7 @@ BEGIN
   ELSE
     eidx := FindExport(modules[midx], procName);
     IF eidx < 0 THEN
-      M.WriteError(E.cmdNotFound)
+      M.WriteErrorCommand(E.cmdNotFound, modName, procName)
     ELSIF ~modules[midx].exportIsCmd[eidx] THEN
       M.WriteError(E.cmdHasParams)
     ELSE
