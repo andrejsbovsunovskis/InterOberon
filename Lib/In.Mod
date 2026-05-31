@@ -1,5 +1,5 @@
 MODULE In; (**%RU:Ввод%LV:Ievade*)
-IMPORT Platform, SYSTEM;
+IMPORT Out, Platform, SYSTEM;
 
 VAR
   Done*: BOOLEAN;
@@ -15,6 +15,7 @@ VAR hi, lo: CHAR; (**%RU:мл,ст%LV:zem,aug*)
     n: INTEGER; (**%RU:н%LV:n*)
 BEGIN
   IF Done THEN
+    Out.Flush;
     n := Platform.ReadCharEx(Platform.stdin, hi, lo);
     IF n <= 0 THEN Done := FALSE
     ELSE

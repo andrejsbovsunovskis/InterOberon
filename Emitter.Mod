@@ -343,7 +343,7 @@ BEGIN
 END SignExtendForm;
 
 PROCEDURE Load*(VAR x: Item);
-VAR op, q, addr, endL: INTEGER;
+VAR op, q, addr, endL, trueL: INTEGER;
 BEGIN
   IF x.mode # Reg THEN
     IF x.mode = ST.Const THEN
@@ -429,21 +429,31 @@ BEGIN
       x.r := AllocR()
     ELSIF x.mode = Cond THEN
       IF (M.SHORT(x.a) # 0) OR (x.b # 0) THEN
-        (* AND/OR chains: false and true lists encode control flow;
-           materialise 0/1 explicitly instead of one CSINC on x.r. *)
-        FixLink(x.b);
-        G.MovImm(RH, 1);
+        (* AND/OR chains combine pending true/false jumps with the current
+           condition code in x.r. Materialise false first so a failed current
+           condition can fall through naturally. *)
+        trueL := x.b;
+        IF x.r = AL THEN
+          G.BCond(AL, trueL); trueL := G.Here() - 1
+        ELSIF x.r # NV THEN
+          G.BCond(x.r, trueL); trueL := G.Here() - 1
+        END;
+        FixLinkWith(M.SHORT(x.a), G.Here());
+        G.MovImm(RH, 0);
         endL := 0;
         G.BCond(14, endL);
         endL := G.Here() - 1;
-        FixLinkWith(M.SHORT(x.a), G.Here());
-        G.MovImm(RH, 0);
+        FixLink(trueL);
+        G.MovImm(RH, 1);
         FixLinkWith(endL, G.Here());
         x.r := AllocR()
       ELSE
         FixLink(x.b);
         FixLinkWith(M.SHORT(x.a), G.Here());
-        G.CSInc(RH, SP, SP, Negated(x.r));
+        IF x.r = AL THEN G.MovImm(RH, 1)
+        ELSIF x.r = NV THEN G.MovImm(RH, 0)
+        ELSE G.CSInc(RH, SP, SP, Negated(x.r))
+        END;
         x.r := AllocR()
       END
     END;
@@ -2453,7 +2463,7 @@ BEGIN
   ELSE
     (* If LHS is true, branch to Or2's exit (x.b patched there) and skip
        RHS.  Clear the false-list head in x.a first (same as And1/CFJump). *)
-    G.BCond(x.r, 0);
+    G.BCond(x.r, x.b);
     x.b := G.Here() - 1;
     FixLink(M.SHORT(x.a));
     x.a := 0
@@ -2474,12 +2484,9 @@ BEGIN
     x.a := y.a; x.b := y.b; x.r := y.r
   ELSE
     x.a := MergeLists(M.SHORT(y.a), M.SHORT(x.a));
-    IF x.b = 0 THEN
-      x.b := MergeLists(y.b, x.b);
-      x.r := y.r
-    END
-  END;
-  IF x.b # 0 THEN FixLink(x.b); x.b := 0 END
+    x.b := MergeLists(y.b, x.b);
+    x.r := y.r
+  END
 END Or2;
 
 (** Procedure Calls *)
