@@ -132,7 +132,6 @@ END DataPageAdrp;
 
 (** Returns TRUE if ARM64 scaled unsigned offset can encode `off`. *)
 PROCEDURE MemImmFits(off, size: INTEGER): BOOLEAN;
-BEGIN
 RETURN (off >= 0) & (off MOD size = 0) & (off DIV size < 1000H)
 END MemImmFits;
 
@@ -141,12 +140,12 @@ VAR a: INTEGER;
 BEGIN
   IF off < 0 THEN a := -off ELSE a := off END;
   IF (a # 0) & (a MOD 1000H = 0) THEN a := a DIV 1000H END;
-RETURN a MOD 1000H = a
-END AddImmFits;
+RETURN a MOD 1000H = a END AddImmFits;
 
 PROCEDURE AddrOffset(reg, base, off: INTEGER);
 BEGIN
-  IF AddImmFits(off) THEN G.AddImm(reg, base, off)
+  IF AddImmFits(off) THEN
+    G.AddImm(reg, base, off)
   ELSE
     G.MovImm(reg, off);
     G.Add(reg, base, reg)
@@ -271,6 +270,31 @@ BEGIN
     S.Mark(E.regOverflow)
   END
 RETURN r END AllocR;
+
+(** Add an arbitrary non-negative byte offset to an address register.
+    Use one ADD-immediate when possible, split a 24-bit offset into its
+    shifted and unshifted 12-bit parts otherwise, and materialize only
+    offsets that cannot be represented by those two instructions. *)
+PROCEDURE AddAddrOffset(reg, off: INTEGER);
+VAR hi, lo, t: INTEGER;
+BEGIN
+  ASSERT(off >= 0);
+  IF off # 0 THEN
+    IF AddImmFits(off) THEN
+      G.AddImm(reg, reg, off)
+    ELSIF (off > 0) & (off <= 0FFFFFFH) THEN
+      hi := off DIV 1000H;
+      lo := off MOD 1000H;
+      G.AddImm(reg, reg, hi * 1000H);
+      IF lo # 0 THEN G.AddImm(reg, reg, lo) END
+    ELSE
+      t := AllocR();
+      G.MovImm(t, off);
+      G.Add(reg, reg, t);
+      DEC(RH)
+    END
+  END
+END AddAddrOffset;
 
 (** Allocate a callee-saved register for long-lived values *)
 PROCEDURE AllocS(): INTEGER;
@@ -1715,11 +1739,11 @@ BEGIN
   IF x.mode = ST.Var THEN
     x.a := x.a + off
   ELSIF x.mode = RegI THEN
-    IF off # 0 THEN G.AddImm(x.r, x.r, off) END
+    AddAddrOffset(x.r, off)
   ELSIF x.mode = ST.VarPar THEN
     LoadAt(RH, FP, M.SHORT(x.a), 8);
     x.r := AllocR();
-    IF off # 0 THEN G.AddImm(x.r, x.r, off) END;
+    AddAddrOffset(x.r, off);
     x.mode := RegI
   ELSE
     S.Mark(E.notRecord)
@@ -2239,12 +2263,12 @@ BEGIN
           G.MovImm(RH + 1, y.a);
           G.Madd(x.r, RH, RH + 1, x.r)
         ELSIF y.a * elemSize # 0 THEN
-          G.AddImm(x.r, x.r, M.SHORT(y.a) * elemSize)
+          AddAddrOffset(x.r, M.SHORT(y.a) * elemSize)
         END
       ELSE
         IF (y.a < 0) OR (y.a >= x.type.len) THEN S.Mark(E.indexOutOfBounds) END;
         IF y.a * elemSize # 0 THEN
-          G.AddImm(x.r, x.r, M.SHORT(y.a) * elemSize)
+          AddAddrOffset(x.r, M.SHORT(y.a) * elemSize)
         END
       END
     ELSIF x.mode = ST.Var THEN
@@ -2299,7 +2323,7 @@ BEGIN
           G.MovImm(RH + 1, y.a);
           G.Madd(x.r, RH, RH + 1, x.r)
         ELSIF y.a * elemSize # 0 THEN
-          G.AddImm(x.r, x.r, M.SHORT(y.a) * elemSize)
+          AddAddrOffset(x.r, M.SHORT(y.a) * elemSize)
         END
       ELSE
         Load(y);

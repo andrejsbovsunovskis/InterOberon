@@ -254,17 +254,17 @@ END Adr;
 
 (** ADD/SUB immediate. *)
 PROCEDURE AddImm*(r1, r2, imm: INTEGER);
-VAR n, a, sh, neg: INTEGER;
+VAR n, shift, op: INTEGER;
 BEGIN
-  sh := 0;
-  IF imm < 0 THEN neg := 1; a := -imm ELSE neg := 0; a := imm END;
-  IF (a # 0) & (a MOD 1000H = 0) THEN a := a DIV 1000H; sh := 1000H END;
-  ASSERT(a MOD 1000H = a);
-  IF neg = 1 THEN
-    n := ((0A2H * 2000H + sh + a) * 20H + r2) * 20H + r1
+  IF imm < 0 THEN op := 0A2H; imm := -imm ELSE op := 22H END;
+  IF (imm # 0) & (imm MOD 1000H = 0) THEN
+    imm := imm DIV 1000H;
+    shift := 1000H
   ELSE
-    n := ((22H * 2000H + sh + a) * 20H + r2) * 20H + r1
+    shift := 0
   END;
+  ASSERT((0 <= imm) & (imm < 1000H));
+  n := ((op * 2000H + shift + imm) * 20H + r2) * 20H + r1;
   n := -7FFFFFFFH - 1 + n; (* Set highest bit for sf=64bit *)
   DWord(n)
 END AddImm;
